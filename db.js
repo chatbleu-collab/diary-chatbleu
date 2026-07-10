@@ -1,0 +1,79 @@
+/* db.js — IndexedDB 데이터 계층
+   entries 스토어: 날짜(YYYY-MM-DD)를 키로 일기 1건 저장
+     { date, content(HTML), weather, pm, audios:[{id,name}], drawing:{w,h,strokes}, mids:[사진id], updatedAt }
+   media 스토어: 사진/오디오 원본 Blob 저장
+     { id, blob, type, name } */
+'use strict';
+
+const DiaryDB = (() => {
+  const DB_NAME = 'diary-db';
+  const DB_VER = 1;
+  let dbPromise = null;
+
+  /* DB 열기 (최초 1회 스토어 생성) */
+  function open() {
+    if (dbPromise) return dbPromise;
+    dbPromise = new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VER);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('entries')) {
+          db.createObjectStore('entries', { keyPath: 'date' });
+        }
+        if (!db.objectStoreNames.contains('media')) {
+          db.createObjectStore('media', { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('DB 열기 실패'));
+    });
+    return dbPromise;
+  }
+
+  /* IDBRequest → Promise 변환 헬퍼 */
+  function reqP(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('DB 요청 실패'));
+    });
+  }
+
+  async function getEntry(date) {
+    const db = await open();
+    return reqP(db.transaction('entries').objectStore('entries').get(date));
+  }
+
+  async function putEntry(entry) {
+    const db = await open();
+    return reqP(db.transaction('entries', 'readwrite').objectStore('entries').put(entry));
+  }
+
+  async function delEntry(date) {
+    const db = await open();
+    return reqP(db.transaction('entries', 'readwrite').objectStore('entries').delete(date));
+  }
+
+  /* 해당 월(YYYY-MM)에 일기가 있는 날짜 키 목록 */
+  async function monthKeys(ym) {
+    const db = await open();
+    const range = IDBKeyRange.bound(ym + '-00', ym + '-99');
+    return reqP(db.transaction('entries').objectStore('entries').getAllKeys(range));
+  }
+
+  async function putMedia(rec) {
+    const db = await open();
+    return reqP(db.transaction('media', 'readwrite').objectStore('media').put(rec));
+  }
+
+  async function getMedia(id) {
+    const db = await open();
+    return reqP(db.transaction('media').objectStore('media').get(id));
+  }
+
+  async function delMedia(id) {
+    const db = await open();
+    return reqP(db.transaction('media', 'readwrite').objectStore('media').delete(id));
+  }
+
+  return { getEntry, putEntry, delEntry, monthKeys, putMedia, getMedia, delMedia };
+})();

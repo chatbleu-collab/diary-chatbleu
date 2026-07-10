@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>나의 다이어리</title>
+  <meta name="description" content="완전 오프라인 다이어리 — 사진, 오디오, 펜 드로잉 지원">
+  <meta name="theme-color" content="#8a6d4b">
+  <!-- PWA 매니페스트 / 아이콘 -->
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+  <!-- ===== 홈: 월간 달력 ===== -->
+  <div id="view-calendar" class="view">
+    <header class="cal-header">
+      <button id="btn-prev" type="button" aria-label="이전 달">‹</button>
+      <h1 id="cal-title">달력</h1>
+      <button id="btn-next" type="button" aria-label="다음 달">›</button>
+      <button id="btn-today" type="button" class="btn-today">오늘</button>
+    </header>
+    <div class="cal-weekdays">
+      <span class="sun">일</span><span>월</span><span>화</span><span>수</span>
+      <span>목</span><span>금</span><span class="sat">토</span>
+    </div>
+    <div id="cal-grid" class="cal-grid"></div>
+    <p class="cal-hint">날짜를 누르면 그날의 일기가 열립니다 · 점은 일기가 있는 날</p>
+  </div>
+
+  <!-- ===== 일기 에디터 ===== -->
+  <div id="view-editor" class="view hidden">
+    <header class="ed-header">
+      <button id="btn-back" type="button" aria-label="달력으로">‹</button>
+      <h2 id="ed-title"></h2>
+      <span id="save-state" class="save-state" aria-live="polite"></span>
+    </header>
+
+    <!-- 도구 모음 -->
+    <div class="ed-toolbar">
+      <button id="btn-datetime" type="button" title="날짜/시간 삽입">🕐 날짜/시간</button>
+      <button id="btn-photo" type="button" title="사진 추가">🖼 사진</button>
+      <button id="btn-audio" type="button" title="오디오 추가">🎵 오디오</button>
+      <button id="btn-draw" type="button" title="펜 드로잉">✏️ 그리기</button>
+      <span class="tb-sep"></span>
+      <button class="fmt-btn" data-cmd="bold" type="button" title="굵게"><b>B</b></button>
+      <button class="fmt-btn" data-cmd="italic" type="button" title="기울임"><i>I</i></button>
+      <button class="fmt-btn" data-cmd="underline" type="button" title="밑줄"><u>U</u></button>
+    </div>
+
+    <!-- 일기 시트: 날씨/미세먼지 + 오디오 + 본문 + 드로잉 오버레이 -->
+    <div id="sheet" class="sheet">
+      <div class="meta-fields">
+        <label>날씨
+          <input id="f-weather" type="text" placeholder="예: 맑음, 26℃" autocomplete="off">
+        </label>
+        <label>미세먼지
+          <input id="f-pm" type="text" placeholder="예: 보통 (PM10 45)" autocomplete="off">
+        </label>
+      </div>
+
+      <div id="audio-list" class="audio-list hidden"></div>
+
+      <div id="editor" class="editor" contenteditable="true"
+           data-placeholder="여기에 일기를 쓰세요…"></div>
+
+      <!-- 펜 드로잉 오버레이 (그리기 모드에서만 입력 활성화) -->
+      <canvas id="draw-canvas" class="draw-canvas"></canvas>
+    </div>
+
+    <!-- 드로잉 도구 (그리기 모드에서 표시) -->
+    <div id="draw-tools" class="draw-tools hidden">
+      <button class="pen-color on" data-color="#222222" style="--c:#222222" type="button" aria-label="검정"></button>
+      <button class="pen-color" data-color="#e74c3c" style="--c:#e74c3c" type="button" aria-label="빨강"></button>
+      <button class="pen-color" data-color="#2f6fdb" style="--c:#2f6fdb" type="button" aria-label="파랑"></button>
+      <button class="pen-color" data-color="#27ae60" style="--c:#27ae60" type="button" aria-label="초록"></button>
+      <button class="pen-color" data-color="#f1c40f" style="--c:#f1c40f" type="button" aria-label="노랑"></button>
+      <input id="pen-size" type="range" min="1" max="20" value="3" aria-label="펜 굵기">
+      <button id="btn-eraser" type="button">지우개</button>
+      <button id="btn-undo" type="button">되돌리기</button>
+      <button id="btn-clear-draw" type="button">전체 지움</button>
+      <button id="btn-draw-done" type="button" class="done">완료</button>
+    </div>
+  </div>
+
+  <!-- 공용 요소 -->
+  <div id="toast" class="toast" role="status"></div>
+  <input type="file" id="file-photo" accept="image/*" multiple hidden>
+  <input type="file" id="file-audio" accept="audio/*" multiple hidden>
+
+  <!-- 스크립트 (순서 중요: db → editor → app) -->
+  <script src="db.js"></script>
+  <script src="editor.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
