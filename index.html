@@ -45,6 +45,7 @@
       <button id="btn-datetime" type="button" title="날짜/시간 삽입">🕐 날짜/시간</button>
       <button id="btn-photo" type="button" title="사진 추가">🖼 사진</button>
       <button id="btn-audio" type="button" title="오디오 추가">🎵 오디오</button>
+      <button id="btn-file" type="button" title="파일 첨부">📎 파일</button>
       <button id="btn-draw" type="button" title="펜 드로잉">✏️ 그리기</button>
       <span class="tb-sep"></span>
       <button class="fmt-btn" data-cmd="bold" type="button" title="굵게"><b>B</b></button>
@@ -52,21 +53,10 @@
       <button class="fmt-btn" data-cmd="underline" type="button" title="밑줄"><u>U</u></button>
     </div>
 
-    <!-- 일기 시트: 날씨/미세먼지 + 오디오 + 본문 + 드로잉 오버레이 -->
+    <!-- 일기 시트: 항목(페이지) 블록 스택 + 드로잉 오버레이
+         각 블록 = 1줄 날짜/시간 헤더, 2줄 날씨|미세먼지, 그 아래 본문 -->
     <div id="sheet" class="sheet">
-      <div class="meta-fields">
-        <label>날씨
-          <input id="f-weather" type="text" placeholder="예: 맑음, 26℃" autocomplete="off">
-        </label>
-        <label>미세먼지
-          <input id="f-pm" type="text" placeholder="예: 보통 (PM10 45)" autocomplete="off">
-        </label>
-      </div>
-
-      <div id="audio-list" class="audio-list hidden"></div>
-
-      <div id="editor" class="editor" contenteditable="true"
-           data-placeholder="여기에 일기를 쓰세요…"></div>
+      <div id="blocks" class="blocks"></div>
 
       <!-- 펜 드로잉 오버레이 (그리기 모드에서만 입력 활성화) -->
       <canvas id="draw-canvas" class="draw-canvas"></canvas>
@@ -91,6 +81,7 @@
   <div id="toast" class="toast" role="status"></div>
   <input type="file" id="file-photo" accept="image/*" multiple hidden>
   <input type="file" id="file-audio" accept="audio/*" multiple hidden>
+  <input type="file" id="file-any" multiple hidden>
 
   <!-- 스크립트 (순서 중요: db → editor → app) -->
   <script src="db.js"></script>

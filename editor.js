@@ -1,17 +1,16 @@
-/* editor.js — 일기 에디터
-   - 날짜별 일기 열기/자동 저장 (IndexedDB)
-   - 새 글은 항상 위쪽: 열 때 커서를 맨 위에 배치
-   - 날짜/시간 삽입, 날씨/미세먼지 필드
-   - 사진: 갤러리 선택·드래그앤드롭·붙여넣기, 크기조절·자유배치·삭제
-   - 오디오: 여러 개 가져오기 + 내장 플레이어
-   - 펜 드로잉: 일기 전체 위 오버레이 레이어, 스트로크 단위 저장/재편집 */
+/* editor.js — 일기 에디터 (v1.1: 항목 블록 구조)
+   - 하루 일기 = 항목(페이지) 블록의 스택. 날짜를 열면 새 블록이 맨 위에 자동 생성.
+   - 각 블록: 1줄 날짜/시간 헤더 · 2줄 날씨|미세먼지 · 그 아래 본문(contenteditable)
+   - 사진/오디오/파일은 탭한 위치(커서)에 삽입. 그리기는 기존과 동일한 전체 오버레이.
+   - v1.0 데이터(단일 본문·하루 날씨 필드·상단 오디오 목록)는 블록 1개로 자동 변환해 보존.
+   - 빈 자동 생성 블록은 저장 시 제외되어 흔적을 남기지 않음. */
 'use strict';
 
 const Editor = (() => {
   /* ---------- DOM 참조 ---------- */
   const $ = (id) => document.getElementById(id);
-  let elView, elTitle, elWeather, elPm, elEditor, elSheet, elCanvas,
-      elAudioList, elSaveState, elDrawTools, elFilePhoto, elFileAudio;
+  let elView, elTitle, elBlocks, elSheet, elCanvas, elSaveState, elDrawTools,
+      elFilePhoto, elFileAudio, elFileAny;
 
   /* ---------- 상태 ---------- */
   let curDate = null;          // 열려 있는 날짜 (YYYY-MM-DD)
@@ -19,12 +18,16 @@ const Editor = (() => {
   let urlMap = new Map();      // mediaId → ObjectURL (닫을 때 해제)
   let dirty = false;
   let saveTimer = null;
-  let onCloseCb = null;        // 저장 후 달력 갱신 콜백
+  let onCloseCb = null;
 
-  /* 드로잉 상태 */
+  /* 커서 추적: 마지막으로 포커스된 본문 영역과 그 안의 선택 범위 */
+  let activeContent = null;
+  let savedRange = null;
+
+  /* 드로잉 상태 (v1.0 과 동일 — 일기 전체 오버레이) */
   let drawMode = false;
-  let strokes = [];            // {color,size,erase,points:[[x,y]..]}
-  let baseW = 0;               // 스트로크 좌표 기준 캔버스 CSS 폭
+  let strokes = [];
+  let baseW = 0;
   let curStroke = null;
   let penColor = '#222222';
   let penSize = 3;
@@ -35,6 +38,7 @@ const Editor = (() => {
   let selWrap = null;
 
   const DAY_NAMES = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+  const pad = (v) => String(v).padStart(2, '0');
 
   /* 미디어 id 생성 (secure context 가 아니어도 동작하도록 폴백 포함) */
   function newId() {
@@ -43,17 +47,25 @@ const Editor = (() => {
       : 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   }
 
+  /* 항목 헤더 문자열: 2026-07-11, 오전 07:21, 토요일 */
+  function formatHeader(ts) {
+    const n = new Date(ts);
+    const dateStr = `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
+    let h = n.getHours();
+    const ampm = h < 12 ? '오전' : '오후';
+    h = h % 12; if (h === 0) h = 12;
+    return `${dateStr}, ${ampm} ${pad(h)}:${pad(n.getMinutes())}, ${DAY_NAMES[n.getDay()]}`;
+  }
+
   /* ==================================================================
      초기화 — DOM 캐시 및 이벤트 바인딩 (앱 시작 시 1회)
      ================================================================== */
   function init(opts) {
     onCloseCb = opts && opts.onClosed;
     elView = $('view-editor'); elTitle = $('ed-title');
-    elWeather = $('f-weather'); elPm = $('f-pm');
-    elEditor = $('editor'); elSheet = $('sheet'); elCanvas = $('draw-canvas');
-    elAudioList = $('audio-list'); elSaveState = $('save-state');
-    elDrawTools = $('draw-tools');
-    elFilePhoto = $('file-photo'); elFileAudio = $('file-audio');
+    elBlocks = $('blocks'); elSheet = $('sheet'); elCanvas = $('draw-canvas');
+    elSaveState = $('save-state'); elDrawTools = $('draw-tools');
+    elFilePhoto = $('file-photo'); elFileAudio = $('file-audio'); elFileAny = $('file-any');
     ctx = elCanvas.getContext('2d');
 
     /* 툴바 버튼 */
@@ -61,11 +73,12 @@ const Editor = (() => {
     $('btn-datetime').addEventListener('click', insertDateTime);
     $('btn-photo').addEventListener('click', () => elFilePhoto.click());
     $('btn-audio').addEventListener('click', () => elFileAudio.click());
+    $('btn-file').addEventListener('click', () => elFileAny.click());
     $('btn-draw').addEventListener('click', toggleDraw);
     document.querySelectorAll('.fmt-btn').forEach((b) => {
       b.addEventListener('mousedown', (e) => e.preventDefault()); // 포커스 유지
       b.addEventListener('click', () => {
-        elEditor.focus();
+        restoreCaret();
         document.execCommand(b.dataset.cmd, false, null);
         markDirty();
       });
@@ -74,22 +87,43 @@ const Editor = (() => {
     /* 파일 선택 */
     elFilePhoto.addEventListener('change', () => { addPhotos(elFilePhoto.files); elFilePhoto.value = ''; });
     elFileAudio.addEventListener('change', () => { addAudios(elFileAudio.files); elFileAudio.value = ''; });
+    elFileAny.addEventListener('change', () => { addFiles(elFileAny.files); elFileAny.value = ''; });
 
-    /* 드래그앤드롭 / 붙여넣기 */
+    /* 커서 추적: 본문 영역 포커스 + 선택 범위 저장 */
+    elBlocks.addEventListener('focusin', (e) => {
+      const c = e.target.closest && e.target.closest('.eb-content');
+      if (c) activeContent = c;
+    });
+    document.addEventListener('selectionchange', () => {
+      const sel = window.getSelection();
+      if (sel.rangeCount) {
+        const r = sel.getRangeAt(0);
+        if (activeContent && activeContent.contains(r.startContainer)) {
+          savedRange = r.cloneRange();
+        }
+      }
+    });
+
+    /* 드래그앤드롭: 놓은 위치의 본문 커서에 삽입 */
     elSheet.addEventListener('dragover', (e) => { e.preventDefault(); });
     elSheet.addEventListener('drop', (e) => {
       e.preventDefault();
       const files = e.dataTransfer && e.dataTransfer.files;
       if (!files || !files.length) return;
-      const imgs = [], auds = [];
+      caretFromPoint(e.clientX, e.clientY);
+      const imgs = [], auds = [], etc = [];
       for (const f of files) {
         if (f.type.startsWith('image/')) imgs.push(f);
         else if (f.type.startsWith('audio/')) auds.push(f);
+        else etc.push(f);
       }
       if (imgs.length) addPhotos(imgs);
       if (auds.length) addAudios(auds);
+      if (etc.length) addFiles(etc);
     });
-    elEditor.addEventListener('paste', (e) => {
+
+    /* 붙여넣기: 이미지 파일이면 사진으로 삽입 */
+    elBlocks.addEventListener('paste', (e) => {
       const files = e.clipboardData && e.clipboardData.files;
       if (files && files.length) {
         const imgs = Array.from(files).filter((f) => f.type.startsWith('image/'));
@@ -97,20 +131,18 @@ const Editor = (() => {
       }
     });
 
-    /* 자동 저장 트리거 */
-    elEditor.addEventListener('input', () => { markDirty(); scheduleCanvasResize(); });
-    elWeather.addEventListener('input', markDirty);
-    elPm.addEventListener('input', markDirty);
+    /* 자동 저장 트리거 (본문·날씨·미세먼지 입력 모두 위임 처리) */
+    elBlocks.addEventListener('input', () => { markDirty(); scheduleCanvasResize(); });
 
     /* 이미지 선택/해제 */
-    elEditor.addEventListener('click', (e) => {
+    elBlocks.addEventListener('click', (e) => {
       const wrap = e.target.closest && e.target.closest('.img-wrap');
       if (wrap) { selectImage(wrap); }
       else deselectImage();
     });
     document.addEventListener('keydown', (e) => {
       if (selWrap && (e.key === 'Delete' || e.key === 'Backspace') &&
-          document.activeElement !== elEditor) {
+          !(document.activeElement && document.activeElement.closest('.eb-content'))) {
         e.preventDefault(); removeImage(selWrap);
       }
     });
@@ -149,29 +181,99 @@ const Editor = (() => {
   function isOpen() { return curDate !== null; }
 
   /* ==================================================================
+     항목 블록 생성/렌더링
+     ================================================================== */
+  function createBlockEl(b) {
+    const sec = document.createElement('section');
+    sec.className = 'entry-block';
+    sec.dataset.bid = b.id;
+    sec.dataset.ts = String(b.ts);
+
+    /* 1줄: 날짜/시간 헤더 */
+    const head = document.createElement('div');
+    head.className = 'eb-head';
+    head.textContent = formatHeader(b.ts);
+
+    /* 2줄: 날씨 | 미세먼지 */
+    const meta = document.createElement('div');
+    meta.className = 'eb-meta';
+    const w = document.createElement('input');
+    w.type = 'text'; w.className = 'eb-weather';
+    w.placeholder = '날씨'; w.autocomplete = 'off';
+    w.value = b.weather || '';
+    const sep = document.createElement('span');
+    sep.className = 'eb-sep'; sep.textContent = '|';
+    const p = document.createElement('input');
+    p.type = 'text'; p.className = 'eb-pm';
+    p.placeholder = '미세먼지'; p.autocomplete = 'off';
+    p.value = b.pm || '';
+    meta.appendChild(w); meta.appendChild(sep); meta.appendChild(p);
+
+    /* 본문 */
+    const content = document.createElement('div');
+    content.className = 'eb-content';
+    content.contentEditable = 'true';
+    content.dataset.placeholder = '여기에 일기를 쓰세요…';
+    content.innerHTML = b.content && b.content.trim() ? b.content : '<p><br></p>';
+
+    sec.appendChild(head); sec.appendChild(meta); sec.appendChild(content);
+    return sec;
+  }
+
+  /* v1.0 레코드(단일 본문/하루 날씨/상단 오디오 목록) → 블록 1개로 변환 */
+  function migrateV1(rec) {
+    let html = rec.content || '';
+    if (Array.isArray(rec.audios) && rec.audios.length) {
+      const audioHtml = rec.audios.map((a) =>
+        `<span class="media-audio" contenteditable="false" data-mid="${a.id}" data-name="${escapeAttr(a.name)}"></span>`
+      ).join('');
+      html = audioHtml + html;
+    }
+    return {
+      id: newId(),
+      ts: rec.updatedAt || new Date(rec.date + 'T00:00:00').getTime(),
+      weather: rec.weather || '',
+      pm: rec.pm || '',
+      content: html
+    };
+  }
+
+  function escapeAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  }
+
+  /* ==================================================================
      일기 열기 / 닫기
      ================================================================== */
   async function open(date) {
     curDate = date;
-    entry = (await DiaryDB.getEntry(date)) || {
-      date, content: '', weather: '', pm: '',
-      audios: [], drawing: null, mids: [], updatedAt: 0
-    };
+    const rec = await DiaryDB.getEntry(date);
+    let blocks = [];
+    if (rec) {
+      if (Array.isArray(rec.blocks)) {
+        blocks = rec.blocks;
+      } else {
+        blocks = [migrateV1(rec)];   // v1.0 데이터 자동 변환
+      }
+    }
+    entry = rec || { date, mids: [], updatedAt: 0 };
+
+    /* 새 항목(페이지)을 맨 위에 자동 생성 — 비워두면 저장에서 제외됨 */
+    blocks = [{ id: newId(), ts: Date.now(), weather: '', pm: '', content: '' }, ...blocks];
 
     /* 제목: 2026년 7월 11일 (금) */
     const [y, m, d] = date.split('-').map(Number);
     const dow = DAY_NAMES[new Date(y, m - 1, d).getDay()].charAt(0);
     elTitle.textContent = `${y}년 ${m}월 ${d}일 (${dow})`;
 
-    elWeather.value = entry.weather || '';
-    elPm.value = entry.pm || '';
-    elEditor.innerHTML = entry.content && entry.content.trim() ? entry.content : '<p><br></p>';
-    await hydrateImages();
-    renderAudioList();
+    /* 블록 렌더링 (맨 위 = 최신) */
+    elBlocks.innerHTML = '';
+    for (const b of blocks) elBlocks.appendChild(createBlockEl(b));
+    await hydrateMedia(elBlocks);
 
-    /* 드로잉 로드 */
+    /* 드로잉 로드 (기존 오버레이 방식 그대로) */
     strokes = entry.drawing && Array.isArray(entry.drawing.strokes)
-      ? entry.drawing.strokes.map((s) => ({ ...s, points: s.points.map((p) => p.slice()) }))
+      ? entry.drawing.strokes.map((s) => ({ ...s, points: s.points.map((pt) => pt.slice()) }))
       : [];
     baseW = (entry.drawing && entry.drawing.w) || 0;
 
@@ -182,11 +284,10 @@ const Editor = (() => {
     setSaveState('');
     dirty = false;
 
-    /* 새 글이 위 — 커서를 맨 위에 배치 */
-    caretToTop();
+    /* 커서를 새 항목(맨 위 블록)의 본문 시작점에 배치 */
+    caretToTopBlock();
   }
 
-  /* 닫기: 저장 → 리소스 해제 → 달력 표시 */
   async function close() {
     if (!isOpen()) return;
     if (drawMode) toggleDraw();
@@ -194,10 +295,10 @@ const Editor = (() => {
     await saveNow();
     const closed = curDate;
     curDate = null; entry = null;
+    activeContent = null; savedRange = null;
     for (const url of urlMap.values()) URL.revokeObjectURL(url);
     urlMap.clear();
-    elEditor.innerHTML = '';
-    elAudioList.innerHTML = '';
+    elBlocks.innerHTML = '';
     elView.classList.add('hidden');
     document.getElementById('view-calendar').classList.remove('hidden');
     if (onCloseCb) onCloseCb(closed);
@@ -217,14 +318,30 @@ const Editor = (() => {
     if (!isOpen()) return;
     clearTimeout(saveTimer);
     try {
-      const content = serializeContent();
+      /* DOM 의 블록 순서 그대로 수집, 완전히 빈 블록(자동 생성분)은 제외 */
+      const blocks = [];
+      elBlocks.querySelectorAll('.entry-block').forEach((sec) => {
+        const contentEl = sec.querySelector('.eb-content');
+        const weather = sec.querySelector('.eb-weather').value.trim();
+        const pm = sec.querySelector('.eb-pm').value.trim();
+        const hasMedia = !!contentEl.querySelector('[data-mid]');
+        const hasText = !!contentEl.textContent.trim();
+        if (!hasMedia && !hasText && !weather && !pm) return;
+        blocks.push({
+          id: sec.dataset.bid,
+          ts: Number(sec.dataset.ts),
+          weather, pm,
+          content: serializeContent(contentEl)
+        });
+      });
+
       const drawing = strokes.length
         ? { w: elCanvas.clientWidth, h: elCanvas.clientHeight, strokes }
         : null;
 
-      /* 현재 사용 중인 사진 id 수집 → 삭제된 사진은 media 스토어에서도 정리 */
-      const usedMids = Array.from(elEditor.querySelectorAll('img[data-mid]'))
-        .map((img) => img.dataset.mid);
+      /* 사용 중인 미디어 id 수집(사진·오디오·파일) → 삭제된 것은 media 스토어에서 정리 */
+      const usedMids = Array.from(elBlocks.querySelectorAll('[data-mid]'))
+        .map((el) => el.dataset.mid);
       const prevMids = entry.mids || [];
       for (const mid of prevMids) {
         if (!usedMids.includes(mid)) {
@@ -234,26 +351,21 @@ const Editor = (() => {
         }
       }
 
-      const rec = {
+      const record = {
         date: curDate,
-        content,
-        weather: elWeather.value.trim(),
-        pm: elPm.value.trim(),
-        audios: entry.audios,
+        blocks,
         drawing,
         mids: usedMids,
         updatedAt: Date.now()
       };
 
-      /* 완전히 빈 일기는 레코드를 삭제해 달력 표시를 깨끗하게 유지 */
-      const isEmpty = !elEditor.textContent.trim() && !usedMids.length &&
-                      !rec.audios.length && !drawing && !rec.weather && !rec.pm;
+      const isEmpty = !blocks.length && !drawing;
       if (isEmpty) {
         await DiaryDB.delEntry(curDate);
       } else {
-        await DiaryDB.putEntry(rec);
+        await DiaryDB.putEntry(record);
       }
-      entry = rec;
+      entry = record;
       dirty = false;
       setSaveState(isEmpty ? '' : '저장됨');
     } catch (err) {
@@ -263,14 +375,15 @@ const Editor = (() => {
     }
   }
 
-  /* 저장용 HTML 정리: 선택 표시·blob URL 제거 (data-mid 로 복원) */
-  function serializeContent() {
-    const clone = elEditor.cloneNode(true);
+  /* 저장용 HTML 정리: 선택 표시·핸들·미디어 UI 내부를 제거하고 data 속성만 남김 */
+  function serializeContent(contentEl) {
+    const clone = contentEl.cloneNode(true);
     clone.querySelectorAll('.img-wrap').forEach((w) => {
       w.classList.remove('sel');
       w.querySelectorAll('.img-handle,.img-actions').forEach((n) => n.remove());
     });
     clone.querySelectorAll('img[data-mid]').forEach((img) => img.removeAttribute('src'));
+    clone.querySelectorAll('.media-audio,.media-file').forEach((w) => { w.innerHTML = ''; });
     return clone.innerHTML;
   }
 
@@ -279,30 +392,71 @@ const Editor = (() => {
   /* ==================================================================
      커서/삽입 유틸
      ================================================================== */
-  function caretToTop() {
-    elEditor.focus();
+  function firstContent() { return elBlocks.querySelector('.eb-content'); }
+
+  function caretToTopBlock() {
+    const c = firstContent();
+    if (!c) return;
+    activeContent = c;
+    c.focus();
     const sel = window.getSelection();
     const range = document.createRange();
-    range.setStart(elEditor, 0);
+    range.setStart(c, 0);
     range.collapse(true);
     sel.removeAllRanges();
     sel.addRange(range);
-    elSheet.scrollTop = 0;
+    savedRange = range.cloneRange();
     window.scrollTo(0, 0);
   }
 
-  /* 커서 위치에 HTML 조각 삽입 (커서가 에디터 밖이면 맨 위에) */
-  function insertHTMLAtCaret(html) {
-    elEditor.focus();
-    const sel = window.getSelection();
+  /* 좌표 지점의 본문 커서로 이동 (드래그앤드롭 위치 반영) */
+  function caretFromPoint(x, y) {
     let range = null;
-    if (sel.rangeCount && elEditor.contains(sel.getRangeAt(0).startContainer)) {
-      range = sel.getRangeAt(0);
+    if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(x, y);
+    } else if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(x, y);
+      if (pos) { range = document.createRange(); range.setStart(pos.offsetNode, pos.offset); range.collapse(true); }
+    }
+    if (range) {
+      const c = range.startContainer.parentElement &&
+                range.startContainer.parentElement.closest &&
+                range.startContainer.parentElement.closest('.eb-content');
+      const host = c || (range.startContainer.nodeType === 1 && range.startContainer.closest
+                          ? range.startContainer.closest('.eb-content') : null);
+      if (host) {
+        activeContent = host;
+        savedRange = range.cloneRange();
+        return;
+      }
+    }
+    /* 본문 밖에 놓으면 맨 위 블록 본문 끝으로 */
+    if (!activeContent) activeContent = firstContent();
+  }
+
+  /* 저장해 둔 커서 범위를 활성 본문에 복원 */
+  function restoreCaret() {
+    if (!activeContent) activeContent = firstContent();
+    if (!activeContent) return null;
+    activeContent.focus();
+    const sel = window.getSelection();
+    let range;
+    if (savedRange && activeContent.contains(savedRange.startContainer)) {
+      range = savedRange;
     } else {
       range = document.createRange();
-      range.setStart(elEditor, 0);
-      range.collapse(true);
+      range.selectNodeContents(activeContent);
+      range.collapse(true);           // 기본: 해당 본문의 맨 위
     }
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return range;
+  }
+
+  /* 커서 위치에 HTML 조각 삽입 (마지막으로 탭한 본문의 커서 위치) */
+  function insertHTMLAtCaret(html) {
+    const range = restoreCaret();
+    if (!range) { toast('먼저 본문을 탭해 주세요.'); return null; }
     range.deleteContents();
     const tpl = document.createElement('template');
     tpl.innerHTML = html;
@@ -310,21 +464,23 @@ const Editor = (() => {
     const last = frag.lastChild;
     range.insertNode(frag);
     if (last) {
+      const sel = window.getSelection();
       const after = document.createRange();
       after.setStartAfter(last);
       after.collapse(true);
       sel.removeAllRanges();
       sel.addRange(after);
+      savedRange = after.cloneRange();
     }
     markDirty();
+    return activeContent;
   }
 
   /* ==================================================================
-     날짜/시간 삽입 — YYYY-MM-DD / 오전·오후 HH:MM / 요일
+     날짜/시간 삽입 (기존 동작 유지 — 커서 위치에 스탬프)
      ================================================================== */
   function insertDateTime() {
     const n = new Date();
-    const pad = (v) => String(v).padStart(2, '0');
     const dateStr = `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
     let h = n.getHours();
     const ampm = h < 12 ? '오전' : '오후';
@@ -337,9 +493,9 @@ const Editor = (() => {
   }
 
   /* ==================================================================
-     사진 — 저장·삽입·선택·크기조절·자유배치
+     사진 — 커서 위치 삽입 (크기조절·자유배치·삭제는 기존 동작 그대로)
      ================================================================== */
-  const MAX_IMG_DIM = 1600;   // 성능을 위한 최대 변 길이 (초과분만 축소 저장)
+  const MAX_IMG_DIM = 1600;
   const COMPRESS_OVER = 1.5 * 1024 * 1024;
 
   async function addPhotos(fileList) {
@@ -352,11 +508,13 @@ const Editor = (() => {
         await DiaryDB.putMedia({ id, blob, type: blob.type, name: f.name });
         const url = URL.createObjectURL(blob);
         urlMap.set(id, url);
-        insertHTMLAtCaret(
+        const host = insertHTMLAtCaret(
           `<span class="img-wrap" contenteditable="false" data-free="0" style="width:70%">` +
           `<img data-mid="${id}" alt=""></span><p><br></p>`
         );
-        const img = elEditor.querySelector(`img[data-mid="${id}"]`);
+        if (!host) { await DiaryDB.delMedia(id).catch(() => {}); continue; }
+        const img = host.querySelector(`img[data-mid="${id}"]:not([src])`) ||
+                    host.querySelector(`img[data-mid="${id}"]`);
         if (img) img.src = url;
       } catch (err) {
         console.error(err);
@@ -366,7 +524,6 @@ const Editor = (() => {
     saveNow();
   }
 
-  /* 큰 이미지를 캔버스로 축소해 JPEG 저장 (원본 화질 유지 목적이 아닌 성능 목적) */
   function downscaleImage(file) {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(file);
@@ -385,25 +542,137 @@ const Editor = (() => {
     });
   }
 
-  /* 저장된 HTML 의 data-mid 를 ObjectURL 로 복원 */
-  async function hydrateImages() {
-    const imgs = elEditor.querySelectorAll('img[data-mid]');
-    for (const img of imgs) {
-      const mid = img.dataset.mid;
-      try {
-        let url = urlMap.get(mid);
-        if (!url) {
-          const rec = await DiaryDB.getMedia(mid);
-          if (!rec) { img.closest('.img-wrap')?.remove(); continue; }
-          url = URL.createObjectURL(rec.blob);
-          urlMap.set(mid, url);
-        }
-        img.src = url;
-      } catch (e) { console.error(e); }
+  /* ==================================================================
+     오디오 / 파일 — 커서 위치 삽입 + 내장 UI
+     ================================================================== */
+  async function addAudios(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('audio/'));
+    if (!files.length) return;
+    for (const f of files) {
+      await insertMediaWrap(f, 'media-audio');
+    }
+    saveNow();
+  }
+
+  async function addFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    for (const f of files) {
+      /* 파일 버튼으로 고른 이미지/오디오도 첨부 파일 칩으로 일관 처리 */
+      await insertMediaWrap(f, 'media-file');
+    }
+    saveNow();
+  }
+
+  async function insertMediaWrap(file, cls) {
+    try {
+      const id = newId();
+      await DiaryDB.putMedia({ id, blob: file, type: file.type || 'application/octet-stream', name: file.name });
+      const extra = cls === 'media-file' ? ` data-size="${file.size}"` : '';
+      const host = insertHTMLAtCaret(
+        `<span class="${cls}" contenteditable="false" data-mid="${id}" data-name="${escapeAttr(file.name)}"${extra}></span><p><br></p>`
+      );
+      if (!host) { await DiaryDB.delMedia(id).catch(() => {}); return; }
+      const wrap = host.querySelector(`.${cls}[data-mid="${id}"]`);
+      if (wrap) await hydrateOne(wrap);
+    } catch (err) {
+      console.error(err);
+      toast(`추가하지 못했어요: ${file.name}`);
     }
   }
 
-  /* 사진 선택 → 크기조절 핸들 + 액션(자유배치/삭제) 표시 */
+  /* ==================================================================
+     미디어 복원(hydrate): 저장된 data-mid 로부터 표시 UI 구성
+     ================================================================== */
+  async function hydrateMedia(root) {
+    for (const el of root.querySelectorAll('img[data-mid], .media-audio, .media-file')) {
+      await hydrateOne(el);
+    }
+  }
+
+  async function mediaURL(mid) {
+    let url = urlMap.get(mid);
+    if (!url) {
+      const rec = await DiaryDB.getMedia(mid);
+      if (!rec) return null;
+      url = URL.createObjectURL(rec.blob);
+      urlMap.set(mid, url);
+    }
+    return url;
+  }
+
+  async function hydrateOne(el) {
+    try {
+      if (el.tagName === 'IMG') {
+        const url = await mediaURL(el.dataset.mid);
+        if (!url) { el.closest('.img-wrap') ? el.closest('.img-wrap').remove() : el.remove(); return; }
+        el.src = url;
+        return;
+      }
+      const mid = el.dataset.mid;
+      const url = await mediaURL(mid);
+      if (!url) { el.remove(); return; }
+      el.innerHTML = '';
+
+      if (el.classList.contains('media-audio')) {
+        const name = document.createElement('div');
+        name.className = 'm-name';
+        name.textContent = el.dataset.name || '오디오';
+        const player = document.createElement('audio');
+        player.controls = true;
+        player.preload = 'metadata';
+        player.src = url;
+        const del = mediaDelBtn(el, el.dataset.name);
+        el.appendChild(name); el.appendChild(del); el.appendChild(player);
+      } else {
+        /* 파일 칩: 이름·크기·저장(다운로드)·삭제 */
+        const icon = document.createElement('span');
+        icon.className = 'm-icon'; icon.textContent = '📎';
+        const name = document.createElement('span');
+        name.className = 'm-name';
+        name.textContent = el.dataset.name || '파일';
+        const size = document.createElement('span');
+        size.className = 'm-size';
+        size.textContent = formatSize(Number(el.dataset.size) || 0);
+        const dl = document.createElement('button');
+        dl.type = 'button'; dl.className = 'm-dl'; dl.textContent = '저장';
+        dl.addEventListener('click', (e) => {
+          e.stopPropagation();
+          /* 새 탭 없이 다운로드 (a[download] 프로그래매틱 클릭) */
+          const a = document.createElement('a');
+          a.href = url; a.download = el.dataset.name || 'file'; a.target = '_self';
+          document.body.appendChild(a); a.click(); a.remove();
+        });
+        const del = mediaDelBtn(el, el.dataset.name);
+        el.appendChild(icon); el.appendChild(name); el.appendChild(size);
+        el.appendChild(dl); el.appendChild(del);
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  function mediaDelBtn(wrap, name) {
+    const del = document.createElement('button');
+    del.type = 'button'; del.className = 'm-del'; del.textContent = '✕';
+    del.setAttribute('aria-label', '삭제');
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!confirm(`'${name || '항목'}'을(를) 삭제할까요?`)) return;
+      wrap.remove();
+      markDirty(); saveNow();   // 미디어 원본은 저장 시 자동 정리(GC)
+    });
+    return del;
+  }
+
+  function formatSize(n) {
+    if (!n) return '';
+    if (n < 1024) return n + 'B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + 'KB';
+    return (n / 1024 / 1024).toFixed(1) + 'MB';
+  }
+
+  /* ==================================================================
+     사진 선택·크기조절·자유배치 (v1.0 동작 유지, 기준만 블록 본문으로)
+     ================================================================== */
   function selectImage(wrap) {
     if (selWrap === wrap) return;
     deselectImage();
@@ -445,20 +714,21 @@ const Editor = (() => {
     markDirty(); saveNow();
   }
 
-  /* 인라인 ↔ 자유배치 전환 */
+  /* 인라인 ↔ 자유배치 전환 (자유배치 기준 = 해당 블록 본문) */
   function toggleFree(wrap, btn) {
+    const host = wrap.closest('.eb-content');
     if (wrap.dataset.free === '1') {
       wrap.dataset.free = '0';
       wrap.style.position = ''; wrap.style.left = ''; wrap.style.top = ''; wrap.style.zIndex = '';
       wrap.removeEventListener('pointerdown', startFreeDrag);
       btn.textContent = '자유배치';
-    } else {
-      const edRect = elEditor.getBoundingClientRect();
+    } else if (host) {
+      const hostRect = host.getBoundingClientRect();
       const r = wrap.getBoundingClientRect();
       wrap.dataset.free = '1';
       wrap.style.position = 'absolute';
-      wrap.style.left = Math.max(0, r.left - edRect.left) + 'px';
-      wrap.style.top = Math.max(0, r.top - edRect.top) + 'px';
+      wrap.style.left = Math.max(0, r.left - hostRect.left) + 'px';
+      wrap.style.top = Math.max(0, r.top - hostRect.top) + 'px';
       wrap.style.zIndex = '2';
       wrap.addEventListener('pointerdown', startFreeDrag);
       btn.textContent = '고정';
@@ -466,13 +736,13 @@ const Editor = (() => {
     markDirty(); saveNow();
   }
 
-  /* 크기 조절 (오른쪽 아래 핸들 드래그) */
   function startResize(e) {
     e.preventDefault(); e.stopPropagation();
     const wrap = selWrap; if (!wrap) return;
+    const host = wrap.closest('.eb-content');
     const startX = e.clientX;
     const startW = wrap.getBoundingClientRect().width;
-    const maxW = elEditor.clientWidth;
+    const maxW = host ? host.clientWidth : 400;
     const move = (ev) => {
       const w = Math.min(maxW, Math.max(60, startW + (ev.clientX - startX)));
       wrap.style.width = Math.round(w) + 'px';
@@ -486,7 +756,6 @@ const Editor = (() => {
     document.addEventListener('pointerup', up);
   }
 
-  /* 자유배치 이미지 드래그 이동 */
   function startFreeDrag(e) {
     const wrap = e.currentTarget;
     if (e.target.closest('.img-handle') || e.target.closest('.img-actions')) return;
@@ -509,72 +778,7 @@ const Editor = (() => {
   }
 
   /* ==================================================================
-     오디오 — 여러 파일 + 내장 플레이어
-     ================================================================== */
-  async function addAudios(fileList) {
-    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('audio/'));
-    if (!files.length) return;
-    for (const f of files) {
-      try {
-        const id = newId();
-        await DiaryDB.putMedia({ id, blob: f, type: f.type, name: f.name });
-        entry.audios.push({ id, name: f.name });
-      } catch (err) {
-        console.error(err);
-        toast(`오디오를 추가하지 못했어요: ${f.name}`);
-      }
-    }
-    renderAudioList();
-    markDirty(); saveNow();
-  }
-
-  function renderAudioList() {
-    elAudioList.innerHTML = '';
-    if (!entry || !entry.audios.length) { elAudioList.classList.add('hidden'); return; }
-    elAudioList.classList.remove('hidden');
-    entry.audios.forEach((a) => {
-      const item = document.createElement('div');
-      item.className = 'audio-item';
-      const name = document.createElement('div');
-      name.className = 'a-name';
-      name.textContent = a.name;
-      const player = document.createElement('audio');
-      player.controls = true;
-      player.preload = 'metadata';
-      (async () => {
-        try {
-          let url = urlMap.get(a.id);
-          if (!url) {
-            const rec = await DiaryDB.getMedia(a.id);
-            if (!rec) return;
-            url = URL.createObjectURL(rec.blob);
-            urlMap.set(a.id, url);
-          }
-          player.src = url;
-        } catch (e) { console.error(e); }
-      })();
-      const del = document.createElement('button');
-      del.type = 'button';
-      del.className = 'a-del';
-      del.textContent = '✕';
-      del.setAttribute('aria-label', '오디오 삭제');
-      del.addEventListener('click', async () => {
-        if (!confirm(`'${a.name}' 오디오를 삭제할까요?`)) return;
-        entry.audios = entry.audios.filter((x) => x.id !== a.id);
-        await DiaryDB.delMedia(a.id).catch(() => {});
-        const u = urlMap.get(a.id);
-        if (u) { URL.revokeObjectURL(u); urlMap.delete(a.id); }
-        renderAudioList();
-        markDirty(); saveNow();
-      });
-      item.appendChild(name); item.appendChild(player); item.appendChild(del);
-      elAudioList.appendChild(item);
-    });
-  }
-
-  /* ==================================================================
-     펜 드로잉 — 일기 전체 위 오버레이 캔버스
-     스타일러스(pointerType 'pen')·마우스·터치 지원, 스트로크 단위 저장
+     펜 드로잉 — 기존과 동일한 '일기 전체 위 오버레이' (변경 없음)
      ================================================================== */
   function toggleDraw() {
     drawMode = !drawMode;
@@ -590,7 +794,6 @@ const Editor = (() => {
     }
   }
 
-  /* 캔버스를 시트 크기에 맞추고 고해상도(DPR) 스케일 적용 */
   function sizeCanvas() {
     const cssW = elSheet.clientWidth;
     const cssH = Math.max(elSheet.scrollHeight, elSheet.clientHeight);
@@ -610,7 +813,6 @@ const Editor = (() => {
     canvasResizeTimer = setTimeout(() => { if (isOpen()) sizeCanvas(); }, 300);
   }
 
-  /* 저장된 스트로크는 기준 폭(baseW) 대비 비율로 스케일해 어떤 화면에서도 위치 유지 */
   function scaleFactor() {
     const cssW = elCanvas.clientWidth || 1;
     return baseW ? cssW / baseW : 1;
@@ -645,7 +847,6 @@ const Editor = (() => {
   function canvasPoint(e) {
     const r = elCanvas.getBoundingClientRect();
     const s = scaleFactor();
-    /* 저장 좌표는 기준 폭 좌표계로 역변환 */
     return [(e.clientX - r.left) / s, (e.clientY - r.top) / s];
   }
 
@@ -664,10 +865,8 @@ const Editor = (() => {
   function drawMove(e) {
     if (!drawMode || !curStroke) return;
     e.preventDefault();
-    /* 코얼레스드 이벤트로 펜 궤적을 촘촘하게 기록 (지원 브라우저) */
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of evs) curStroke.points.push(canvasPoint(ev));
-    /* 실시간 미리보기: 마지막 구간만 다시 그림 */
     redrawLive();
   }
 
