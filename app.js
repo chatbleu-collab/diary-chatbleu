@@ -120,9 +120,108 @@ const App = (() => {
     if (Editor.isOpen()) Editor.close();
   });
 
-  /* 에디터가 닫힌 뒤 달력 점 갱신 */
+  /* ---------- 일기 내용 검색 ---------- */
+  let searchTimer = null;
+  let curQuery = '';
+
+  function stripHTML(html) {
+    const t = document.createElement('div');
+    t.innerHTML = html || '';
+    return t.textContent || '';
+  }
+
+  /* 검색 중에는 달력을 숨기고 결과 목록을 표시 */
+  function setSearchMode(on) {
+    document.querySelector('.cal-header').classList.toggle('hidden', on);
+    document.querySelector('.cal-weekdays').classList.toggle('hidden', on);
+    elGrid.classList.toggle('hidden', on);
+    document.querySelector('.cal-hint').classList.toggle('hidden', on);
+    document.getElementById('search-results').classList.toggle('hidden', !on);
+  }
+
+  function makeSnippet(text, idx, len) {
+    const start = Math.max(0, idx - 24);
+    const end = Math.min(text.length, idx + len + 60);
+    const frag = document.createDocumentFragment();
+    if (start > 0) frag.appendChild(document.createTextNode('…'));
+    frag.appendChild(document.createTextNode(text.slice(start, idx)));
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(idx, idx + len);
+    frag.appendChild(mark);
+    frag.appendChild(document.createTextNode(text.slice(idx + len, end)));
+    if (end < text.length) frag.appendChild(document.createTextNode('…'));
+    return frag;
+  }
+
+  async function runSearch(q) {
+    curQuery = q;
+    const resEl = document.getElementById('search-results');
+    if (!q) { resEl.innerHTML = ''; setSearchMode(false); return; }
+    setSearchMode(true);
+    resEl.innerHTML = '';
+
+    let entries = [];
+    try { entries = await DiaryDB.allEntries(); }
+    catch (e) { console.error(e); toast('검색 중 오류가 발생했어요.'); return; }
+
+    const ql = q.toLowerCase();
+    const hits = [];
+    for (const e of entries) {
+      /* v1.1 블록 형식과 v1.0 단일 형식 모두 검색 */
+      const blocks = Array.isArray(e.blocks)
+        ? e.blocks
+        : [{ content: e.content || '', weather: e.weather || '', pm: e.pm || '', ts: e.updatedAt || 0 }];
+      for (const b of blocks) {
+        const text = (stripHTML(b.content) + ' ' + (b.weather || '') + ' ' + (b.pm || ''))
+          .replace(/\s+/g, ' ').trim();
+        const idx = text.toLowerCase().indexOf(ql);
+        if (idx >= 0) hits.push({ date: e.date, ts: b.ts || 0, text, idx });
+      }
+    }
+    hits.sort((a, b) => b.date.localeCompare(a.date) || b.ts - a.ts);
+
+    if (!hits.length) {
+      const none = document.createElement('p');
+      none.className = 'search-none';
+      none.textContent = `'${q}' 검색 결과가 없어요.`;
+      resEl.appendChild(none);
+      return;
+    }
+    for (const h of hits.slice(0, 100)) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'search-item';
+      const [y, m, d] = h.date.split('-').map(Number);
+      const title = document.createElement('div');
+      title.className = 's-date';
+      title.textContent = `${y}년 ${m}월 ${d}일`;
+      const snip = document.createElement('div');
+      snip.className = 's-snippet';
+      snip.appendChild(makeSnippet(h.text, h.idx, q.length));
+      item.appendChild(title); item.appendChild(snip);
+      item.addEventListener('click', () => openDate(h.date));
+      resEl.appendChild(item);
+    }
+  }
+
+  function initSearch() {
+    const inp = document.getElementById('search-input');
+    const clear = document.getElementById('search-clear');
+    inp.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => runSearch(inp.value.trim()), 250);
+    });
+    clear.addEventListener('click', () => {
+      inp.value = '';
+      runSearch('');
+      inp.focus();
+    });
+  }
+
+  /* 에디터가 닫힌 뒤 달력 점 갱신 (검색 중이면 결과도 새로 고침) */
   function onEditorClosed() {
     renderCalendar();
+    if (curQuery) runSearch(curQuery);
   }
 
   /* ---------- 초기화 ---------- */
@@ -134,6 +233,7 @@ const App = (() => {
     document.getElementById('btn-today').addEventListener('click', goToday);
 
     Editor.init({ onClosed: onEditorClosed });
+    initSearch();
 
     const n = new Date();
     viewYear = n.getFullYear();

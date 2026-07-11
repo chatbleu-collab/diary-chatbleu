@@ -18,6 +18,15 @@
 
   <!-- ===== 홈: 월간 달력 ===== -->
   <div id="view-calendar" class="view">
+    <!-- 일기 내용 검색 -->
+    <div class="search-wrap">
+      <span class="search-icon" aria-hidden="true">🔍</span>
+      <input id="search-input" type="search" placeholder="일기 검색"
+             autocomplete="off" aria-label="일기 검색">
+      <button id="search-clear" type="button" aria-label="검색어 지우기">✕</button>
+    </div>
+    <div id="search-results" class="search-results hidden"></div>
+
     <header class="cal-header">
       <button id="btn-prev" type="button" aria-label="이전 달">‹</button>
       <h1 id="cal-title">달력</h1>
@@ -72,7 +81,6 @@
       <input id="pen-size" type="range" min="1" max="20" value="3" aria-label="펜 굵기">
       <button id="btn-eraser" type="button">지우개</button>
       <button id="btn-undo" type="button">되돌리기</button>
-      <button id="btn-clear-draw" type="button">전체 지움</button>
       <button id="btn-draw-done" type="button" class="done">완료</button>
     </div>
   </div>

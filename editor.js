@@ -165,10 +165,6 @@ const Editor = (() => {
     $('btn-undo').addEventListener('click', () => {
       if (strokes.length) { strokes.pop(); redraw(); markDirty(); saveNow(); }
     });
-    $('btn-clear-draw').addEventListener('click', () => {
-      if (!strokes.length) return;
-      if (confirm('그림을 모두 지울까요?')) { strokes = []; redraw(); markDirty(); saveNow(); }
-    });
     $('btn-draw-done').addEventListener('click', toggleDraw);
 
     /* 화면을 벗어날 때 즉시 저장 */
@@ -189,10 +185,21 @@ const Editor = (() => {
     sec.dataset.bid = b.id;
     sec.dataset.ts = String(b.ts);
 
-    /* 1줄: 날짜/시간 헤더 */
-    const head = document.createElement('div');
+    /* 1줄: 날짜/시간 헤더 (탭하여 수정) + 항목 삭제 버튼 */
+    const headRow = document.createElement('div');
+    headRow.className = 'eb-headrow';
+    const head = document.createElement('button');
+    head.type = 'button';
     head.className = 'eb-head';
+    head.title = '탭하여 날짜/시간 수정';
     head.textContent = formatHeader(b.ts);
+    head.addEventListener('click', () => editHeader(sec, head));
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'eb-del';
+    delBtn.textContent = '항목 삭제';
+    delBtn.addEventListener('click', () => deleteBlock(sec));
+    headRow.appendChild(head); headRow.appendChild(delBtn);
 
     /* 2줄: 날씨 | 미세먼지 */
     const meta = document.createElement('div');
@@ -203,11 +210,15 @@ const Editor = (() => {
     w.value = b.weather || '';
     const sep = document.createElement('span');
     sep.className = 'eb-sep'; sep.textContent = '|';
+    const pmLabel = document.createElement('span');
+    pmLabel.className = 'eb-label';
+    pmLabel.textContent = '미세먼지';
     const p = document.createElement('input');
     p.type = 'text'; p.className = 'eb-pm';
-    p.placeholder = '미세먼지'; p.autocomplete = 'off';
+    p.placeholder = '보통'; p.autocomplete = 'off';   /* 라벨은 고정, 값만 입력 */
     p.value = b.pm || '';
-    meta.appendChild(w); meta.appendChild(sep); meta.appendChild(p);
+    meta.appendChild(w); meta.appendChild(sep);
+    meta.appendChild(pmLabel); meta.appendChild(p);
 
     /* 본문 */
     const content = document.createElement('div');
@@ -216,8 +227,59 @@ const Editor = (() => {
     content.dataset.placeholder = '여기에 일기를 쓰세요…';
     content.innerHTML = b.content && b.content.trim() ? b.content : '<p><br></p>';
 
-    sec.appendChild(head); sec.appendChild(meta); sec.appendChild(content);
+    sec.appendChild(headRow); sec.appendChild(meta); sec.appendChild(content);
     return sec;
+  }
+
+  /* 헤더(날짜/시간) 편집: 탭하면 네이티브 날짜·시간 입력으로 전환, [확인]으로 반영 */
+  function editHeader(sec, headBtn) {
+    if (sec.querySelector('.eb-head-edit')) return;   // 이미 편집 중
+    const ts = Number(sec.dataset.ts) || Date.now();
+    const d = new Date(ts);
+    const wrap = document.createElement('span');
+    wrap.className = 'eb-head-edit';
+
+    const di = document.createElement('input');
+    di.type = 'date';
+    di.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const ti = document.createElement('input');
+    ti.type = 'time';
+    ti.value = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.className = 'eb-head-ok';
+    okBtn.textContent = '확인';
+
+    const finish = () => {
+      let newTs = ts;
+      const dm = /^(\d{4})-(\d{2})-(\d{2})$/.exec(di.value || '');
+      const tm = /^(\d{2}):(\d{2})$/.exec(ti.value || '');
+      if (dm && tm) {
+        const cand = new Date(+dm[1], +dm[2] - 1, +dm[3], +tm[1], +tm[2]).getTime();
+        if (!Number.isNaN(cand)) newTs = cand;
+      }
+      sec.dataset.ts = String(newTs);
+      headBtn.textContent = formatHeader(newTs);       // 요일은 날짜에서 자동 계산
+      wrap.remove();
+      headBtn.classList.remove('hidden');
+      markDirty(); saveNow();
+    };
+    okBtn.addEventListener('click', finish);
+
+    wrap.appendChild(di); wrap.appendChild(ti); wrap.appendChild(okBtn);
+    headBtn.classList.add('hidden');
+    headBtn.after(wrap);
+    di.focus();
+  }
+
+  /* 항목(페이지) 완전 삭제 — 포함된 사진·오디오·파일 원본도 저장 시 자동 정리(GC) */
+  function deleteBlock(sec) {
+    if (!confirm('이 항목(페이지)을 완전히 삭제할까요? 되돌릴 수 없어요.')) return;
+    if (selWrap && sec.contains(selWrap)) deselectImage();
+    if (activeContent && sec.contains(activeContent)) { activeContent = null; savedRange = null; }
+    sec.remove();
+    markDirty(); saveNow(); scheduleCanvasResize();
+    toast('항목을 삭제했어요.');
   }
 
   /* v1.0 레코드(단일 본문/하루 날씨/상단 오디오 목록) → 블록 1개로 변환 */
@@ -258,8 +320,12 @@ const Editor = (() => {
     }
     entry = rec || { date, mids: [], updatedAt: 0 };
 
-    /* 새 항목(페이지)을 맨 위에 자동 생성 — 비워두면 저장에서 제외됨 */
-    blocks = [{ id: newId(), ts: Date.now(), weather: '', pm: '', content: '' }, ...blocks];
+    /* 새 항목(페이지)을 맨 위에 자동 생성 — 비워두면 저장에서 제외됨.
+       헤더 날짜 = 달력에서 선택한 날짜, 시간 = 현재 시각 (탭하여 수정 가능) */
+    const now = new Date();
+    const [sy, sm, sd] = date.split('-').map(Number);
+    const newTs = new Date(sy, sm - 1, sd, now.getHours(), now.getMinutes(), now.getSeconds()).getTime();
+    blocks = [{ id: newId(), ts: newTs, weather: '', pm: '', content: '' }, ...blocks];
 
     /* 제목: 2026년 7월 11일 (금) */
     const [y, m, d] = date.split('-').map(Number);

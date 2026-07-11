@@ -30,6 +30,39 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
 
 .view { max-width: 760px; margin: 0 auto; padding: 12px 12px 32px; }
 
+/* ================= 검색 ================= */
+.search-wrap {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--paper); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 4px 12px; margin-bottom: 10px;
+}
+.search-icon { font-size: .95rem; opacity: .6; }
+#search-input {
+  flex: 1; min-width: 0; border: none; outline: none;
+  font: inherit; font-size: .95rem; padding: 10px 0;
+  background: transparent; color: var(--ink);
+}
+#search-input::-webkit-search-cancel-button { display: none; }
+#search-clear {
+  width: 34px; height: 34px; border-radius: 50%;
+  color: var(--muted); font-size: .95rem;
+}
+#search-clear:active { background: var(--accent-soft); }
+
+.search-results { display: flex; flex-direction: column; gap: 8px; }
+.search-item {
+  text-align: left; background: var(--paper);
+  border-radius: 12px; box-shadow: var(--shadow); padding: 12px 14px;
+}
+.search-item:active { background: var(--accent-soft); }
+.s-date { font-size: .82rem; font-weight: 700; color: var(--accent); }
+.s-snippet {
+  font-size: .88rem; color: var(--ink); margin-top: 4px; line-height: 1.5;
+  word-break: break-word;
+}
+.s-snippet mark { background: #ffe9a8; border-radius: 3px; padding: 0 2px; }
+.search-none { text-align: center; color: var(--muted); font-size: .88rem; padding: 24px 0; }
+
 /* ================= 달력 ================= */
 .cal-header {
   display: flex; align-items: center; gap: 4px;
@@ -127,10 +160,39 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
   padding-top: 18px; margin-top: 4px;
 }
 
-/* 1줄: 날짜/시간 헤더 */
+/* 1줄: 날짜/시간 헤더 행 (헤더 칩 + 항목 삭제) */
+.eb-headrow {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap;
+}
+/* 헤더 칩: 기존 대비 +2pt(≈1.05rem)·굵게·배경색, 탭하면 날짜/시간 수정 */
 .eb-head {
-  font-size: .88rem; font-weight: 700; color: var(--accent);
-  letter-spacing: -.01em;
+  font-size: 1.05rem; font-weight: 700; color: var(--accent);
+  letter-spacing: -.01em; text-align: left;
+  background: var(--accent-soft);
+  padding: 7px 13px; border-radius: 10px;
+}
+.eb-head:active { filter: brightness(.96); }
+.eb-head-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.eb-head-edit input {
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 9px; font: inherit; font-size: .9rem;
+  background: #fffdf9; color: var(--ink);
+}
+.eb-head-ok {
+  background: var(--accent); color: #fff; font-size: .82rem; font-weight: 600;
+  padding: 8px 12px; border-radius: 8px;
+}
+.eb-del {
+  color: var(--danger); font-size: .78rem; font-weight: 600;
+  padding: 7px 10px; border-radius: 8px; border: 1px solid #f2cccc;
+  background: #fff;
+}
+.eb-del:active { background: #fdecec; }
+
+/* 미세먼지 고정 라벨 */
+.eb-label {
+  font-size: .82rem; font-weight: 700; color: var(--muted); white-space: nowrap;
 }
 
 /* 2줄: 날씨 | 미세먼지 */

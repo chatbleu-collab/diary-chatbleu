@@ -53,6 +53,12 @@ const DiaryDB = (() => {
     return reqP(db.transaction('entries', 'readwrite').objectStore('entries').delete(date));
   }
 
+  /* 전체 일기 레코드 조회 (검색용) */
+  async function allEntries() {
+    const db = await open();
+    return reqP(db.transaction('entries').objectStore('entries').getAll());
+  }
+
   /* 해당 월(YYYY-MM)에 일기가 있는 날짜 키 목록 */
   async function monthKeys(ym) {
     const db = await open();
@@ -75,5 +81,5 @@ const DiaryDB = (() => {
     return reqP(db.transaction('media', 'readwrite').objectStore('media').delete(id));
   }
 
-  return { getEntry, putEntry, delEntry, monthKeys, putMedia, getMedia, delMedia };
+  return { getEntry, putEntry, delEntry, allEntries, monthKeys, putMedia, getMedia, delMedia };
 })();
