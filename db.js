@@ -76,10 +76,28 @@ const DiaryDB = (() => {
     return reqP(db.transaction('media').objectStore('media').get(id));
   }
 
+  /* 미디어 전체 조회 (백업용) */
+  async function allMedia() {
+    const db = await open();
+    return reqP(db.transaction('media').objectStore('media').getAll());
+  }
+
+  /* 두 스토어 전체 비우기 (복원 직전에만 사용) */
+  async function clearAll() {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const t = db.transaction(['entries', 'media'], 'readwrite');
+      t.objectStore('entries').clear();
+      t.objectStore('media').clear();
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error || new Error('초기화 실패'));
+    });
+  }
+
   async function delMedia(id) {
     const db = await open();
     return reqP(db.transaction('media', 'readwrite').objectStore('media').delete(id));
   }
 
-  return { getEntry, putEntry, delEntry, allEntries, monthKeys, putMedia, getMedia, delMedia };
+  return { getEntry, putEntry, delEntry, allEntries, monthKeys, putMedia, getMedia, delMedia, allMedia, clearAll };
 })();

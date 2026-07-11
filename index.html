@@ -39,6 +39,12 @@
     </div>
     <div id="cal-grid" class="cal-grid"></div>
     <p class="cal-hint">날짜를 누르면 그날의 일기가 열립니다 · 점은 일기가 있는 날</p>
+
+    <!-- 백업 / 복원 -->
+    <div class="backup-bar">
+      <button id="btn-backup" type="button">💾 백업 다운로드</button>
+      <button id="btn-restore" type="button">📂 복원</button>
+    </div>
   </div>
 
   <!-- ===== 일기 에디터 ===== -->
@@ -90,6 +96,7 @@
   <input type="file" id="file-photo" accept="image/*" multiple hidden>
   <input type="file" id="file-audio" accept="audio/*" multiple hidden>
   <input type="file" id="file-any" multiple hidden>
+  <input type="file" id="file-restore" accept=".json,application/json" hidden>
 
   <!-- 스크립트 (순서 중요: db → editor → app) -->
   <script src="db.js"></script>

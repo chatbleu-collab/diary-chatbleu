@@ -136,6 +136,7 @@ const App = (() => {
     document.querySelector('.cal-weekdays').classList.toggle('hidden', on);
     elGrid.classList.toggle('hidden', on);
     document.querySelector('.cal-hint').classList.toggle('hidden', on);
+    document.querySelector('.backup-bar').classList.toggle('hidden', on);
     document.getElementById('search-results').classList.toggle('hidden', !on);
   }
 
@@ -218,6 +219,145 @@ const App = (() => {
     });
   }
 
+  /* ---------- 백업 / 복원 ----------
+     백업 = 모든 IndexedDB 데이터(일기 텍스트·블록·그림·메타 + 사진·오디오·파일 원본)를
+     단일 JSON 파일로 내보내기. 미디어 Blob 은 base64 로 내장 → 외부 의존성 없이 완전 복원 가능. */
+
+  async function blobToBase64(blob) {
+    /* 1순위: 표준 arrayBuffer() — 모든 최신 브라우저 지원 */
+    if (blob && typeof blob.arrayBuffer === 'function') {
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let bin = '';
+      const CHUNK = 0x8000;                 /* 호출 인자 수 제한 회피용 청크 처리 */
+      for (let i = 0; i < buf.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+      }
+      return btoa(bin);
+    }
+    /* 2순위: FileReader 폴백 (구형 브라우저) */
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(r.error || new Error('읽기 실패'));
+      r.readAsDataURL(blob);
+    });
+  }
+
+  function b64ToBlob(b64, type) {
+    const bin = atob(b64 || '');
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: type || 'application/octet-stream' });
+  }
+
+  async function downloadBackup() {
+    const btn = document.getElementById('btn-backup');
+    btn.disabled = true;
+    try {
+      toast('백업 파일을 만드는 중…');
+      const entries = await DiaryDB.allEntries();
+      const media = await DiaryDB.allMedia();
+
+      /* 거대 문자열 1개 대신 조각 배열로 Blob 구성 (메모리 부담 완화) */
+      const parts = [
+        '{"app":"diary-pwa","format":2,"exportedAt":' + Date.now() + ',',
+        '"entries":', JSON.stringify(entries), ',"media":['
+      ];
+      for (let i = 0; i < media.length; i++) {
+        const m = media[i];
+        let data = '';
+        try { data = await blobToBase64(m.blob); }
+        catch (e) { console.error('미디어 인코딩 실패:', m.id, e); }
+        parts.push((i ? ',' : '') +
+          JSON.stringify({ id: m.id, type: m.type || '', name: m.name || '', data }));
+      }
+      parts.push(']}');
+      const blob = new Blob(parts, { type: 'application/json' });
+      const fname = 'diary-backup-' + todayStr() + '.json';
+
+      /* 1순위: 브라우저 파일 저장 대화상자(저장 위치 직접 선택) */
+      if (window.showSaveFilePicker) {
+        try {
+          const handle = await window.showSaveFilePicker({
+            suggestedName: fname,
+            types: [{ description: '다이어리 백업', accept: { 'application/json': ['.json'] } }]
+          });
+          const w = await handle.createWritable();
+          await w.write(blob);
+          await w.close();
+          toast('백업을 저장했어요.');
+          return;
+        } catch (err) {
+          if (err && err.name === 'AbortError') return;   /* 사용자가 취소 */
+          console.warn('저장 대화상자 실패, 다운로드로 대체:', err);
+        }
+      }
+      /* 2순위: 표준 다운로드 (모바일 등) — 새 탭 없이 */
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = fname; a.target = '_self';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      toast('백업 파일을 내려받았어요.');
+    } catch (e) {
+      console.error(e);
+      toast('백업 생성에 실패했어요.');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function restoreBackup(file) {
+    try {
+      let obj;
+      try { obj = JSON.parse(await file.text()); }
+      catch { toast('백업 파일 형식이 올바르지 않아요.'); return; }
+      if (!obj || obj.app !== 'diary-pwa' ||
+          !Array.isArray(obj.entries) || !Array.isArray(obj.media)) {
+        toast('이 앱의 백업 파일이 아니에요.');
+        return;
+      }
+      const when = obj.exportedAt ? new Date(obj.exportedAt).toLocaleString('ko-KR') : '알 수 없음';
+      if (!confirm(
+        `백업으로 복원할까요?\n` +
+        `백업 시점: ${when}\n일기 ${obj.entries.length}일 · 미디어 ${obj.media.length}개\n\n` +
+        `현재 기기의 일기가 모두 이 백업으로 교체됩니다.`)) return;
+
+      toast('복원 중…');
+      await DiaryDB.clearAll();
+      let mediaFail = 0;
+      for (const m of obj.media) {
+        try {
+          await DiaryDB.putMedia({
+            id: m.id, blob: b64ToBlob(m.data, m.type),
+            type: m.type || '', name: m.name || ''
+          });
+        } catch (e) { mediaFail++; console.error(e); }
+      }
+      for (const e of obj.entries) {
+        try { await DiaryDB.putEntry(e); } catch (err) { console.error(err); }
+      }
+      await renderCalendar();
+      if (curQuery) runSearch(curQuery);
+      toast(mediaFail
+        ? `복원 완료 (미디어 ${mediaFail}개는 복구하지 못했어요)`
+        : '복원이 완료됐어요.');
+    } catch (e) {
+      console.error(e);
+      toast('복원에 실패했어요.');
+    }
+  }
+
+  function initBackup() {
+    document.getElementById('btn-backup').addEventListener('click', downloadBackup);
+    const fileInp = document.getElementById('file-restore');
+    document.getElementById('btn-restore').addEventListener('click', () => fileInp.click());
+    fileInp.addEventListener('change', () => {
+      if (fileInp.files && fileInp.files[0]) restoreBackup(fileInp.files[0]);
+      fileInp.value = '';
+    });
+  }
+
   /* 에디터가 닫힌 뒤 달력 점 갱신 (검색 중이면 결과도 새로 고침) */
   function onEditorClosed() {
     renderCalendar();
@@ -234,6 +374,7 @@ const App = (() => {
 
     Editor.init({ onClosed: onEditorClosed });
     initSearch();
+    initBackup();
 
     const n = new Date();
     viewYear = n.getFullYear();
