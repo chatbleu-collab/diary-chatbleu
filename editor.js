@@ -70,7 +70,6 @@ const Editor = (() => {
 
     /* 툴바 버튼 */
     $('btn-back').addEventListener('click', () => history.back());
-    $('btn-datetime').addEventListener('click', insertDateTime);
     $('btn-photo').addEventListener('click', () => elFilePhoto.click());
     $('btn-audio').addEventListener('click', () => elFileAudio.click());
     $('btn-file').addEventListener('click', () => elFileAny.click());
@@ -540,22 +539,6 @@ const Editor = (() => {
     }
     markDirty();
     return activeContent;
-  }
-
-  /* ==================================================================
-     날짜/시간 삽입 (기존 동작 유지 — 커서 위치에 스탬프)
-     ================================================================== */
-  function insertDateTime() {
-    const n = new Date();
-    const dateStr = `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}`;
-    let h = n.getHours();
-    const ampm = h < 12 ? '오전' : '오후';
-    h = h % 12; if (h === 0) h = 12;
-    const timeStr = `${ampm} ${pad(h)}:${pad(n.getMinutes())}`;
-    const dayStr = DAY_NAMES[n.getDay()];
-    insertHTMLAtCaret(
-      `<div class="dt-stamp" contenteditable="false">${dateStr}<br>${timeStr}<br>${dayStr}</div><p><br></p>`
-    );
   }
 
   /* ==================================================================
