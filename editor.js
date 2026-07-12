@@ -66,7 +66,8 @@ const Editor = (() => {
     elBlocks = $('blocks'); elSheet = $('sheet'); elCanvas = $('draw-canvas');
     elSaveState = $('save-state'); elDrawTools = $('draw-tools');
     elFilePhoto = $('file-photo'); elFileAudio = $('file-audio'); elFileAny = $('file-any');
-    ctx = elCanvas.getContext('2d');
+    /* 저지연(desynchronized) 컨텍스트 — S펜 등 스타일러스 지연 최소화 (미지원 브라우저는 옵션 무시) */
+    ctx = elCanvas.getContext('2d', { desynchronized: true });
 
     /* 툴바 버튼 */
     $('btn-back').addEventListener('click', () => history.back());
@@ -74,13 +75,27 @@ const Editor = (() => {
     $('btn-audio').addEventListener('click', () => elFileAudio.click());
     $('btn-file').addEventListener('click', () => elFileAny.click());
     $('btn-draw').addEventListener('click', toggleDraw);
-    document.querySelectorAll('.fmt-btn').forEach((b) => {
+    document.querySelectorAll('.fmt-btn[data-cmd]').forEach((b) => {
       b.addEventListener('mousedown', (e) => e.preventDefault()); // 포커스 유지
       b.addEventListener('click', () => {
         restoreCaret();
         document.execCommand(b.dataset.cmd, false, null);
         markDirty();
       });
+    });
+
+    /* 글자 색: 버튼 → 색 선택기 열기 → 선택한 범위(또는 이후 입력)에 색 적용 */
+    const colorBtn = $('btn-color');
+    const colorInput = $('fmt-color');
+    const colorA = $('color-a');
+    colorBtn.addEventListener('mousedown', (e) => e.preventDefault()); // 선택 영역 유지
+    colorBtn.addEventListener('click', () => colorInput.click());
+    colorInput.addEventListener('input', () => {
+      restoreCaret();
+      try { document.execCommand('styleWithCSS', false, true); } catch (err) {}
+      document.execCommand('foreColor', false, colorInput.value);
+      colorA.style.borderBottomColor = colorInput.value;   // 버튼에 현재 색 표시
+      markDirty();
     });
 
     /* 파일 선택 */
@@ -132,6 +147,10 @@ const Editor = (() => {
 
     /* 자동 저장 트리거 (본문·날씨·미세먼지 입력 모두 위임 처리) */
     elBlocks.addEventListener('input', () => { markDirty(); scheduleCanvasResize(); });
+    /* 미세먼지 선택 목록 변경 시 즉시 저장 */
+    elBlocks.addEventListener('change', (e) => {
+      if (e.target.classList && e.target.classList.contains('eb-pm')) { markDirty(); saveNow(); }
+    });
 
     /* 이미지 선택/해제 */
     elBlocks.addEventListener('click', (e) => {
@@ -212,9 +231,24 @@ const Editor = (() => {
     const pmLabel = document.createElement('span');
     pmLabel.className = 'eb-label';
     pmLabel.textContent = '미세먼지';
-    const p = document.createElement('input');
-    p.type = 'text'; p.className = 'eb-pm';
-    p.placeholder = '보통'; p.autocomplete = 'off';   /* 라벨은 고정, 값만 입력 */
+    /* 미세먼지: 선택 목록 (좋음/보통/나쁨/매우나쁨) */
+    const PM_LEVELS = ['좋음', '보통', '나쁨', '매우나쁨'];
+    const p = document.createElement('select');
+    p.className = 'eb-pm';
+    const empty = document.createElement('option');
+    empty.value = ''; empty.textContent = '선택';
+    p.appendChild(empty);
+    for (const lv of PM_LEVELS) {
+      const o = document.createElement('option');
+      o.value = lv; o.textContent = lv;
+      p.appendChild(o);
+    }
+    /* 기존(자유 텍스트) 값 호환: 목록에 없는 저장값은 옵션으로 추가해 그대로 표시 */
+    if (b.pm && !PM_LEVELS.includes(b.pm)) {
+      const o = document.createElement('option');
+      o.value = b.pm; o.textContent = b.pm;
+      p.appendChild(o);
+    }
     p.value = b.pm || '';
     meta.appendChild(w); meta.appendChild(sep);
     meta.appendChild(pmLabel); meta.appendChild(p);
@@ -875,13 +909,41 @@ const Editor = (() => {
 
   function drawStroke(st, s) {
     if (!st.points.length) return;
+    const pts = st.points;
     ctx.globalCompositeOperation = st.erase ? 'destination-out' : 'source-over';
     ctx.strokeStyle = st.color;
-    ctx.lineWidth = st.size * s;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
+
+    /* 필압이 기록된 획: 세그먼트별 가변 굵기 + 중간점 스무딩 */
+    const hasP = pts.some((pt) => pt.length > 2);
+    if (hasP) {
+      if (pts.length < 3) {
+        ctx.lineWidth = segWidth(st, pts[0], pts[pts.length - 1]) * s;
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
+        ctx.lineTo(pts[pts.length - 1][0] * s, pts[pts.length - 1][1] * s);
+        ctx.stroke();
+      } else {
+        for (let i = 1; i < pts.length - 1; i++) {
+          const m1x = (pts[i - 1][0] + pts[i][0]) / 2 * s;
+          const m1y = (pts[i - 1][1] + pts[i][1]) / 2 * s;
+          const m2x = (pts[i][0] + pts[i + 1][0]) / 2 * s;
+          const m2y = (pts[i][1] + pts[i + 1][1]) / 2 * s;
+          ctx.lineWidth = segWidth(st, pts[i - 1], pts[i + 1]) * s;
+          ctx.beginPath();
+          ctx.moveTo(m1x, m1y);
+          ctx.quadraticCurveTo(pts[i][0] * s, pts[i][1] * s, m2x, m2y);
+          ctx.stroke();
+        }
+      }
+      ctx.globalCompositeOperation = 'source-over';
+      return;
+    }
+
+    /* 필압 없는 획(기존 데이터 포함): 기존 방식 그대로 */
+    ctx.lineWidth = st.size * s;
     ctx.beginPath();
-    const pts = st.points;
     ctx.moveTo(pts[0][0] * s, pts[0][1] * s);
     for (let i = 1; i < pts.length; i++) {
       const mx = (pts[i - 1][0] + pts[i][0]) / 2 * s;
@@ -893,15 +955,35 @@ const Editor = (() => {
     ctx.globalCompositeOperation = 'source-over';
   }
 
+  /* 좌표 + (펜일 때) 필압을 함께 기록: [x, y] 또는 [x, y, pressure]
+     기존 저장 데이터([x, y])와 완전 호환 — 필압 없는 점은 기존과 동일하게 그려짐 */
   function canvasPoint(e) {
     const r = elCanvas.getBoundingClientRect();
     const s = scaleFactor();
-    return [(e.clientX - r.left) / s, (e.clientY - r.top) / s];
+    const pt = [(e.clientX - r.left) / s, (e.clientY - r.top) / s];
+    if (e.pointerType === 'pen' && typeof e.pressure === 'number' && e.pressure > 0) {
+      pt.push(Math.round(e.pressure * 1000) / 1000);
+    }
+    return pt;
   }
+
+  /* 세그먼트 굵기: 양 끝점의 필압 평균으로 굵기 변화 (필압 없으면 기본 굵기) */
+  function segWidth(st, a, b) {
+    const pa = a.length > 2 ? a[2] : -1;
+    const pb = b.length > 2 ? b[2] : -1;
+    if (pa < 0 && pb < 0) return st.size;
+    const p = ((pa < 0 ? pb : pa) + (pb < 0 ? pa : pb)) / 2;
+    return st.size * Math.min(2, Math.max(0.35, p * 2));
+  }
+
+  let drawPointerId = null;   // 현재 그리는 포인터 하나만 추적 (손바닥 오터치 방지)
+  let liveIdx = 1;            // 증분 렌더링: 다음에 그릴 세그먼트 시작 인덱스
 
   function drawStart(e) {
     if (!drawMode) return;
+    if (curStroke) return;                 // 그리는 도중 들어온 다른 포인터(손바닥 등) 무시
     e.preventDefault();
+    drawPointerId = e.pointerId;
     elCanvas.setPointerCapture(e.pointerId);
     curStroke = {
       color: penColor,
@@ -909,27 +991,44 @@ const Editor = (() => {
       erase: eraseOn,
       points: [canvasPoint(e)]
     };
+    liveIdx = 1;
   }
 
   function drawMove(e) {
-    if (!drawMode || !curStroke) return;
+    if (!drawMode || !curStroke || e.pointerId !== drawPointerId) return;
     e.preventDefault();
+    /* 코얼레스드 이벤트로 프레임 사이의 모든 입력 좌표를 수집 → 획 누락 방지 */
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of evs) curStroke.points.push(canvasPoint(ev));
-    redrawLive();
+    drawIncrement();
   }
 
-  function redrawLive() {
-    redraw();
-    if (curStroke) drawStroke(curStroke, scaleFactor());
+  /* 증분 렌더링: 새로 추가된 세그먼트만 그림 (전체 재그리기 제거 → 지연/버벅임 해소) */
+  function drawIncrement() {
+    const s = scaleFactor();
+    const pts = curStroke.points;
+    ctx.globalCompositeOperation = curStroke.erase ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = curStroke.color;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let i = liveIdx; i < pts.length; i++) {
+      ctx.lineWidth = segWidth(curStroke, pts[i - 1], pts[i]) * s;
+      ctx.beginPath();
+      ctx.moveTo(pts[i - 1][0] * s, pts[i - 1][1] * s);
+      ctx.lineTo(pts[i][0] * s, pts[i][1] * s);
+      ctx.stroke();
+    }
+    liveIdx = pts.length;
+    ctx.globalCompositeOperation = 'source-over';
   }
 
   function drawEnd(e) {
-    if (!curStroke) return;
+    if (!curStroke || (e && e.pointerId !== drawPointerId)) return;
     if (curStroke.points.length === 1) curStroke.points.push(curStroke.points[0].slice());
     strokes.push(curStroke);
     curStroke = null;
-    redraw();
+    drawPointerId = null;
+    liveIdx = 1;
+    redraw();                 // 획 확정 시 1회 전체 렌더(부드러운 곡선으로 정리)
     markDirty(); saveNow();
   }
 

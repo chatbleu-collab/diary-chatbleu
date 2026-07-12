@@ -4,7 +4,7 @@
 
 /* 캐시 키와 파일 목록 — 파일을 추가/수정하면 여기만 고치면 됩니다.
    배포본을 갱신할 때는 CACHE_NAME 의 버전 숫자를 올리세요. */
-const CACHE_NAME = 'diary-pwa-v5';
+const CACHE_NAME = 'diary-pwa-v6';
 const ASSETS = [
   './',
   './index.html',

@@ -144,6 +144,11 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
 .ed-toolbar button:active, .ed-toolbar button.on { background: var(--accent); color: #fff; }
 .tb-sep { width: 1px; height: 24px; background: var(--line); margin: 0 2px; }
 .fmt-btn { min-width: 40px; }
+/* 글자 색 버튼: A 밑줄에 현재 색 표시 */
+.color-a {
+  font-weight: 700; padding: 0 2px;
+  border-bottom: 3px solid #e74c3c;
+}
 
 /* 일기 시트 (드로잉 오버레이 기준 컨테이너) */
 .sheet {
@@ -197,13 +202,13 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
 
 /* 2줄: 날씨 | 미세먼지 */
 .eb-meta { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
-.eb-meta input {
+.eb-meta input, .eb-meta select {
   flex: 1; min-width: 0;
   border: 1px solid var(--line); border-radius: 10px;
   padding: 8px 12px; font: inherit; font-size: .9rem;
   background: #fffdf9; color: var(--ink);
 }
-.eb-meta input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.eb-meta input:focus, .eb-meta select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
 .eb-sep { color: var(--muted); font-weight: 600; }
 
 /* 블록 본문 (자유배치 이미지의 기준 컨테이너) */
