@@ -66,8 +66,10 @@ const Editor = (() => {
     elBlocks = $('blocks'); elSheet = $('sheet'); elCanvas = $('draw-canvas');
     elSaveState = $('save-state'); elDrawTools = $('draw-tools');
     elFilePhoto = $('file-photo'); elFileAudio = $('file-audio'); elFileAny = $('file-any');
-    /* 저지연(desynchronized) 컨텍스트 — S펜 등 스타일러스 지연 최소화 (미지원 브라우저는 옵션 무시) */
-    ctx = elCanvas.getContext('2d', { desynchronized: true });
+    /* 일반 2D 컨텍스트 사용 — desynchronized 옵션은 삼성 인터넷 등에서
+       투명 오버레이가 검게 렌더링되는 문제가 있어 사용하지 않음.
+       (드로잉 성능은 증분 렌더링으로 확보됨) */
+    ctx = elCanvas.getContext('2d');
 
     /* 툴바 버튼 */
     $('btn-back').addEventListener('click', () => history.back());
