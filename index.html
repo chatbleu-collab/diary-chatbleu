@@ -43,6 +43,7 @@
     <!-- 백업 / 복원 -->
     <div class="backup-bar">
       <button id="btn-backup" type="button">💾 백업 다운로드</button>
+      <button id="btn-sync" type="button">🔄 동기화</button>
       <button id="btn-restore" type="button">📂 복원</button>
     </div>
   </div>
@@ -98,6 +99,7 @@
   <input type="file" id="file-audio" accept="audio/*" multiple hidden>
   <input type="file" id="file-any" multiple hidden>
   <input type="file" id="file-restore" accept=".json,application/json" hidden>
+  <input type="file" id="file-sync" accept=".json,application/json" hidden>
 
   <!-- 스크립트 (순서 중요: db → editor → app) -->
   <script src="db.js"></script>

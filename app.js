@@ -348,6 +348,67 @@ const App = (() => {
     }
   }
 
+  /* ---------- 동기화 (병합) ----------
+     PC ↔ 스마트폰 간 데이터 동기화용. 다른 기기의 백업 파일을 읽어
+     현재 기기 데이터와 "병합"한다. 복원(전체 교체)과 달리:
+     - 이 기기에만 있는 일기는 그대로 보존
+     - 같은 날짜가 양쪽에 있으면 updatedAt(마지막 저장 시각)이 최신인 쪽 유지
+     - 이 기기에 없는 사진·오디오·파일만 추가 (중복 저장 없음) */
+  async function mergeBackup(file) {
+    try {
+      let obj;
+      try { obj = JSON.parse(await file.text()); }
+      catch { toast('백업 파일 형식이 올바르지 않아요.'); return; }
+      if (!obj || obj.app !== 'diary-pwa' ||
+          !Array.isArray(obj.entries) || !Array.isArray(obj.media)) {
+        toast('이 앱의 백업 파일이 아니에요.');
+        return;
+      }
+      const when = obj.exportedAt ? new Date(obj.exportedAt).toLocaleString('ko-KR') : '알 수 없음';
+      if (!confirm(
+        `이 백업 파일과 동기화(병합)할까요?\n` +
+        `백업 시점: ${when}\n일기 ${obj.entries.length}일 · 미디어 ${obj.media.length}개\n\n` +
+        `같은 날짜는 더 최신에 저장된 내용이 남고,\n` +
+        `이 기기에만 있는 일기는 그대로 유지됩니다.`)) return;
+
+      toast('동기화 중…');
+
+      /* 1) 일기 병합: 새 날짜는 추가, 겹치는 날짜는 최신 저장본 유지 */
+      const localEntries = await DiaryDB.allEntries();
+      const localMap = new Map(localEntries.map((e) => [e.date, e]));
+      let added = 0, updated = 0, kept = 0;
+      for (const e of obj.entries) {
+        try {
+          const loc = localMap.get(e.date);
+          if (!loc) { await DiaryDB.putEntry(e); added++; }
+          else if ((e.updatedAt || 0) > (loc.updatedAt || 0)) { await DiaryDB.putEntry(e); updated++; }
+          else kept++;
+        } catch (err) { console.error(err); }
+      }
+
+      /* 2) 미디어 병합: 이 기기에 없는 것만 추가 */
+      let mediaFail = 0;
+      for (const m of obj.media) {
+        try {
+          const exists = await DiaryDB.getMedia(m.id);
+          if (exists) continue;
+          await DiaryDB.putMedia({
+            id: m.id, blob: b64ToBlob(m.data, m.type),
+            type: m.type || '', name: m.name || ''
+          });
+        } catch (e) { mediaFail++; console.error(e); }
+      }
+
+      await renderCalendar();
+      if (curQuery) runSearch(curQuery);
+      toast(`동기화 완료 — 추가 ${added}일 · 갱신 ${updated}일 · 유지 ${kept}일` +
+        (mediaFail ? ` (미디어 ${mediaFail}개 실패)` : ''));
+    } catch (e) {
+      console.error(e);
+      toast('동기화에 실패했어요.');
+    }
+  }
+
   function initBackup() {
     document.getElementById('btn-backup').addEventListener('click', downloadBackup);
     const fileInp = document.getElementById('file-restore');
@@ -355,6 +416,13 @@ const App = (() => {
     fileInp.addEventListener('change', () => {
       if (fileInp.files && fileInp.files[0]) restoreBackup(fileInp.files[0]);
       fileInp.value = '';
+    });
+    /* 동기화 버튼: 다른 기기의 백업 파일을 골라 병합 */
+    const syncInp = document.getElementById('file-sync');
+    document.getElementById('btn-sync').addEventListener('click', () => syncInp.click());
+    syncInp.addEventListener('change', () => {
+      if (syncInp.files && syncInp.files[0]) mergeBackup(syncInp.files[0]);
+      syncInp.value = '';
     });
   }
 
