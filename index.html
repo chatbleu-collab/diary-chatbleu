@@ -43,7 +43,6 @@
     <!-- 백업 / 복원 -->
     <div class="backup-bar">
       <button id="btn-backup" type="button">💾 백업 다운로드</button>
-      <button id="btn-sync" type="button">🔄 동기화</button>
       <button id="btn-restore" type="button">📂 복원</button>
     </div>
   </div>
@@ -59,6 +58,7 @@
     <!-- 도구 모음 -->
     <div class="ed-toolbar">
       <button id="btn-photo" type="button" title="사진 추가">🖼 사진</button>
+      <button id="btn-video" type="button" title="동영상 추가">🎬 동영상</button>
       <button id="btn-audio" type="button" title="오디오 추가">🎵 오디오</button>
       <button id="btn-file" type="button" title="파일 첨부">📎 파일</button>
       <button id="btn-draw" type="button" title="펜 드로잉">✏️ 그리기</button>
@@ -96,10 +96,10 @@
   <!-- 공용 요소 -->
   <div id="toast" class="toast" role="status"></div>
   <input type="file" id="file-photo" accept="image/*" multiple hidden>
+  <input type="file" id="file-video" accept="video/*" multiple hidden>
   <input type="file" id="file-audio" accept="audio/*" multiple hidden>
   <input type="file" id="file-any" multiple hidden>
   <input type="file" id="file-restore" accept=".json,application/json" hidden>
-  <input type="file" id="file-sync" accept=".json,application/json" hidden>
 
   <!-- 스크립트 (순서 중요: db → editor → app) -->
   <script src="db.js"></script>

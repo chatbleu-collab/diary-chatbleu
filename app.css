@@ -263,6 +263,76 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
 .media-audio .m-del { grid-column: 2; grid-row: 1; justify-self: end; }
 .m-del:active { background: #fdecec; }
 
+/* ===== 동영상 썸네일 카드 =====
+   일기 본문 폭에 맞춰 정렬되는 카드. 썸네일을 탭하면 원본이 기기에 저장된다. */
+.media-video {
+  display: block; position: relative;
+  margin: 10px 0; width: 100%; max-width: 100%;
+  background: #fbf8f2; border: 1px solid var(--line);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.mv-thumb {
+  display: block; position: relative; width: 100%;
+  padding: 0; background: #181613; line-height: 0;
+  touch-action: manipulation;
+}
+.mv-thumb img {
+  display: block; width: 100%; height: auto;
+  max-height: 46vh; object-fit: cover;
+}
+.mv-thumb:active { filter: brightness(.88); }
+.mv-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 150px; font-size: 2.4rem; line-height: 1;
+}
+/* 가운데 재생 아이콘 (장식) */
+.mv-thumb::after {
+  content: '▶';
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 54px; height: 54px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .48); color: #fff;
+  font-size: 1.15rem; line-height: 1; padding-left: 4px;
+  pointer-events: none;
+}
+.mv-save-badge {
+  position: absolute; right: 8px; top: 8px;
+  background: rgba(0, 0, 0, .62); color: #fff;
+  font-size: .72rem; font-weight: 700; line-height: 1;
+  padding: 6px 9px; border-radius: 8px; pointer-events: none;
+}
+.mv-dur {
+  position: absolute; right: 8px; bottom: 8px;
+  background: rgba(0, 0, 0, .62); color: #fff;
+  font-size: .72rem; font-weight: 600; line-height: 1;
+  padding: 5px 7px; border-radius: 6px; pointer-events: none;
+}
+.mv-player {
+  display: block; width: 100%; max-height: 60vh;
+  background: #000;
+}
+.mv-bar {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 8px 10px; font-size: .84rem;
+}
+.mv-bar .m-name {
+  flex: 1; min-width: 0; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mv-bar .m-size { color: var(--muted); font-size: .76rem; }
+.mv-play {
+  background: var(--accent-soft); color: var(--accent);
+  font-size: .76rem; font-weight: 700;
+  padding: 6px 10px; border-radius: 7px;
+}
+.mv-bar .m-dl {
+  background: var(--accent); color: #fff;
+  font-size: .76rem; font-weight: 600;
+  padding: 6px 10px; border-radius: 7px;
+}
+
 /* 날짜/시간 스탬프 */
 .dt-stamp {
   display: inline-block;
@@ -299,6 +369,17 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
   background: var(--ink); color: #fff; font-size: .75rem; font-weight: 600;
   padding: 6px 10px; border-radius: 8px; box-shadow: var(--shadow);
 }
+/* 사진 썸네일 저장 배지 — 탭하면 원본을 기기(사진첩/다운로드)에 저장 */
+.img-save {
+  position: absolute; right: 6px; top: 6px;
+  width: 34px; height: 34px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .55); color: #fff;
+  font-size: 1rem; font-weight: 700; line-height: 1;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, .25);
+  touch-action: manipulation;
+}
+.img-save:active { background: var(--accent); }
 
 /* 드로잉 오버레이 캔버스 */
 .draw-canvas {

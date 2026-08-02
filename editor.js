@@ -10,12 +10,13 @@ const Editor = (() => {
   /* ---------- DOM 참조 ---------- */
   const $ = (id) => document.getElementById(id);
   let elView, elTitle, elBlocks, elSheet, elCanvas, elSaveState, elDrawTools,
-      elFilePhoto, elFileAudio, elFileAny;
+      elFilePhoto, elFileVideo, elFileAudio, elFileAny;
 
   /* ---------- 상태 ---------- */
   let curDate = null;          // 열려 있는 날짜 (YYYY-MM-DD)
   let entry = null;            // 현재 일기 레코드
   let urlMap = new Map();      // mediaId → ObjectURL (닫을 때 해제)
+  let blobMap = new Map();     // mediaId → Blob (기기 저장 시 즉시 사용 → 사용자 제스처 유지)
   let dirty = false;
   let saveTimer = null;
   let onCloseCb = null;
@@ -65,7 +66,8 @@ const Editor = (() => {
     elView = $('view-editor'); elTitle = $('ed-title');
     elBlocks = $('blocks'); elSheet = $('sheet'); elCanvas = $('draw-canvas');
     elSaveState = $('save-state'); elDrawTools = $('draw-tools');
-    elFilePhoto = $('file-photo'); elFileAudio = $('file-audio'); elFileAny = $('file-any');
+    elFilePhoto = $('file-photo'); elFileVideo = $('file-video');
+    elFileAudio = $('file-audio'); elFileAny = $('file-any');
     /* 일반 2D 컨텍스트 사용 — desynchronized 옵션은 삼성 인터넷 등에서
        투명 오버레이가 검게 렌더링되는 문제가 있어 사용하지 않음.
        (드로잉 성능은 증분 렌더링으로 확보됨) */
@@ -74,6 +76,7 @@ const Editor = (() => {
     /* 툴바 버튼 */
     $('btn-back').addEventListener('click', () => history.back());
     $('btn-photo').addEventListener('click', () => elFilePhoto.click());
+    $('btn-video').addEventListener('click', () => elFileVideo.click());
     $('btn-audio').addEventListener('click', () => elFileAudio.click());
     $('btn-file').addEventListener('click', () => elFileAny.click());
     $('btn-draw').addEventListener('click', toggleDraw);
@@ -102,6 +105,7 @@ const Editor = (() => {
 
     /* 파일 선택 */
     elFilePhoto.addEventListener('change', () => { addPhotos(elFilePhoto.files); elFilePhoto.value = ''; });
+    elFileVideo.addEventListener('change', () => { addVideos(elFileVideo.files); elFileVideo.value = ''; });
     elFileAudio.addEventListener('change', () => { addAudios(elFileAudio.files); elFileAudio.value = ''; });
     elFileAny.addEventListener('change', () => { addFiles(elFileAny.files); elFileAny.value = ''; });
 
@@ -127,13 +131,15 @@ const Editor = (() => {
       const files = e.dataTransfer && e.dataTransfer.files;
       if (!files || !files.length) return;
       caretFromPoint(e.clientX, e.clientY);
-      const imgs = [], auds = [], etc = [];
+      const imgs = [], vids = [], auds = [], etc = [];
       for (const f of files) {
         if (f.type.startsWith('image/')) imgs.push(f);
+        else if (f.type.startsWith('video/')) vids.push(f);
         else if (f.type.startsWith('audio/')) auds.push(f);
         else etc.push(f);
       }
       if (imgs.length) addPhotos(imgs);
+      if (vids.length) addVideos(vids);
       if (auds.length) addAudios(auds);
       if (etc.length) addFiles(etc);
     });
@@ -399,6 +405,7 @@ const Editor = (() => {
     activeContent = null; savedRange = null;
     for (const url of urlMap.values()) URL.revokeObjectURL(url);
     urlMap.clear();
+    blobMap.clear();
     elBlocks.innerHTML = '';
     elView.classList.add('hidden');
     document.getElementById('view-calendar').classList.remove('hidden');
@@ -440,9 +447,13 @@ const Editor = (() => {
         ? { w: elCanvas.clientWidth, h: elCanvas.clientHeight, strokes }
         : null;
 
-      /* 사용 중인 미디어 id 수집(사진·오디오·파일) → 삭제된 것은 media 스토어에서 정리 */
+      /* 사용 중인 미디어 id 수집(사진·동영상·동영상 썸네일·오디오·파일)
+         → 삭제된 것은 media 스토어에서 정리 */
       const usedMids = Array.from(elBlocks.querySelectorAll('[data-mid]'))
         .map((el) => el.dataset.mid);
+      Array.from(elBlocks.querySelectorAll('[data-poster]')).forEach((el) => {
+        if (el.dataset.poster) usedMids.push(el.dataset.poster);
+      });
       const prevMids = entry.mids || [];
       for (const mid of prevMids) {
         if (!usedMids.includes(mid)) {
@@ -481,10 +492,11 @@ const Editor = (() => {
     const clone = contentEl.cloneNode(true);
     clone.querySelectorAll('.img-wrap').forEach((w) => {
       w.classList.remove('sel');
-      w.querySelectorAll('.img-handle,.img-actions').forEach((n) => n.remove());
+      w.querySelectorAll('.img-handle,.img-actions,.img-save').forEach((n) => n.remove());
     });
     clone.querySelectorAll('img[data-mid]').forEach((img) => img.removeAttribute('src'));
-    clone.querySelectorAll('.media-audio,.media-file').forEach((w) => { w.innerHTML = ''; });
+    /* 동영상 카드도 껍데기(data 속성)만 저장 — 열 때 썸네일을 다시 구성 */
+    clone.querySelectorAll('.media-audio,.media-file,.media-video').forEach((w) => { w.innerHTML = ''; });
     return clone.innerHTML;
   }
 
@@ -578,10 +590,104 @@ const Editor = (() => {
   }
 
   /* ==================================================================
+     기기에 저장 (사진첩/갤러리 또는 다운로드 폴더)
+     1순위: 웹 공유 시트 — 모바일에서 "이미지 저장 / 동영상 저장"으로 사진첩 직행
+     2순위: 저장 위치 선택 대화상자 (PC 크롬/엣지)
+     3순위: 표준 다운로드 (다운로드 폴더)
+     ※ 사용자 제스처가 끊기면 공유 시트가 차단되므로 Blob 은 blobMap 에서 즉시 꺼내 쓴다.
+     ================================================================== */
+  function isMobileLike() {
+    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+           (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform || ''));
+  }
+
+  function anchorDownload(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name || 'file';
+    a.target = '_self';                       /* 새 탭 열지 않음 */
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 8000);
+  }
+
+  async function saveBlobToDevice(blob, name, type) {
+    const fname = name || 'diary-file';
+    const mime = type || blob.type || 'application/octet-stream';
+
+    /* 1) 공유 시트 (사진첩/갤러리 저장 가능) */
+    try {
+      if (isMobileLike() && navigator.share && typeof File === 'function') {
+        const file = new File([blob], fname, { type: mime });
+        if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: fname });
+          return;                              /* 사용자가 저장 위치를 선택함 */
+        }
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;   /* 사용자가 취소 */
+      console.warn('공유 시트 사용 불가, 다운로드로 대체:', err);
+    }
+
+    /* 2) 저장 위치 선택 대화상자 (PC) */
+    if (window.showSaveFilePicker) {
+      try {
+        const ext = (fname.match(/\.[A-Za-z0-9]+$/) || [''])[0];
+        const handle = await window.showSaveFilePicker({
+          suggestedName: fname,
+          types: ext ? [{ description: '첨부 파일', accept: { [mime]: [ext] } }] : undefined
+        });
+        const w = await handle.createWritable();
+        await w.write(blob);
+        await w.close();
+        toast('기기에 저장했어요.');
+        return;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return;
+        console.warn('저장 대화상자 실패, 다운로드로 대체:', err);
+      }
+    }
+
+    /* 3) 표준 다운로드 (다운로드 폴더) */
+    anchorDownload(blob, fname);
+    toast('다운로드 폴더에 저장했어요.');
+  }
+
+  /* mid 로 저장 — 캐시에 있으면 즉시(제스처 유지), 없으면 IndexedDB 에서 읽어 저장 */
+  function saveMediaById(mid, name, type) {
+    const cached = blobMap.get(mid);
+    if (cached) { saveBlobToDevice(cached, name, type); return; }
+    DiaryDB.getMedia(mid).then((rec) => {
+      if (!rec || !rec.blob) { toast('원본 파일을 찾지 못했어요.'); return; }
+      blobMap.set(mid, rec.blob);
+      return saveBlobToDevice(rec.blob, name || rec.name, type || rec.type);
+    }).catch((e) => { console.error(e); toast('저장에 실패했어요.'); });
+  }
+
+  /* ==================================================================
      사진 — 커서 위치 삽입 (크기조절·자유배치·삭제는 기존 동작 그대로)
+     썸네일(미리보기)을 그대로 표시하고, 모서리 ⤓ 배지를 누르면 원본을 기기에 저장
      ================================================================== */
   const MAX_IMG_DIM = 1600;
   const COMPRESS_OVER = 1.5 * 1024 * 1024;
+
+  /* 사진 썸네일 위 저장 배지 (탭 → 원본 저장). 이미 있으면 중복 생성하지 않음 */
+  function ensureImgSaveBtn(wrap) {
+    if (!wrap || wrap.querySelector('.img-save')) return;
+    const img = wrap.querySelector('img[data-mid]');
+    if (!img) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'img-save';
+    btn.title = '원본을 기기에 저장';
+    btn.setAttribute('aria-label', '사진을 기기에 저장');
+    btn.textContent = '⤓';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      saveMediaById(img.dataset.mid, img.dataset.name || wrap.dataset.name || 'photo.jpg', '');
+    });
+    wrap.appendChild(btn);
+  }
 
   async function addPhotos(fileList) {
     const files = Array.from(fileList || []).filter((f) => f.type.startsWith('image/'));
@@ -591,22 +697,242 @@ const Editor = (() => {
         const blob = f.size > COMPRESS_OVER ? await downscaleImage(f) : f;
         const id = newId();
         await DiaryDB.putMedia({ id, blob, type: blob.type, name: f.name });
+        blobMap.set(id, blob);
         const url = URL.createObjectURL(blob);
         urlMap.set(id, url);
         const host = insertHTMLAtCaret(
           `<span class="img-wrap" contenteditable="false" data-free="0" style="width:70%">` +
-          `<img data-mid="${id}" alt=""></span><p><br></p>`
+          `<img data-mid="${id}" data-name="${escapeAttr(f.name)}" alt=""></span><p><br></p>`
         );
         if (!host) { await DiaryDB.delMedia(id).catch(() => {}); continue; }
         const img = host.querySelector(`img[data-mid="${id}"]:not([src])`) ||
                     host.querySelector(`img[data-mid="${id}"]`);
-        if (img) img.src = url;
+        if (img) { img.src = url; ensureImgSaveBtn(img.closest('.img-wrap')); }
       } catch (err) {
         console.error(err);
         toast(`사진을 추가하지 못했어요: ${f.name}`);
       }
     }
     saveNow();
+  }
+
+  /* ==================================================================
+     동영상 — 첫 프레임 썸네일 카드로 삽입
+     · 썸네일(포스터)은 별도 미디어 레코드로 저장 → 오프라인·백업·복원 모두 유지
+     · 썸네일을 탭하면 원본 동영상을 기기에 저장 (사진첩/갤러리 또는 다운로드 폴더)
+     · ▶ 재생 버튼으로 앱 안에서 바로 재생
+     ================================================================== */
+  const POSTER_MAX = 720;
+
+  /* 동영상 첫 프레임 → JPEG Blob (+ 재생 길이). 실패해도 앱 흐름을 막지 않음 */
+  function makeVideoPoster(file) {
+    return new Promise((resolve) => {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.muted = true;
+      v.defaultMuted = true;
+      v.playsInline = true;
+      v.setAttribute('playsinline', '');
+      v.setAttribute('muted', '');
+      v.crossOrigin = 'anonymous';
+
+      let settled = false;
+      let duration = 0;
+      const finish = (blob) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try { v.pause(); } catch (e) {}
+        v.removeAttribute('src'); v.load();
+        URL.revokeObjectURL(url);
+        resolve({ blob, duration });
+      };
+      const timer = setTimeout(() => finish(null), 8000);   /* 안전 타임아웃 */
+
+      const grab = () => {
+        try {
+          const w = v.videoWidth, h = v.videoHeight;
+          if (!w || !h) return finish(null);
+          const scale = Math.min(1, POSTER_MAX / Math.max(w, h));
+          const c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * scale));
+          c.height = Math.max(1, Math.round(h * scale));
+          c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+          c.toBlob((b) => finish(b), 'image/jpeg', 0.82);
+        } catch (e) { console.warn(e); finish(null); }
+      };
+
+      v.addEventListener('loadedmetadata', () => {
+        duration = Number.isFinite(v.duration) ? v.duration : 0;
+        /* 완전 검은 첫 프레임을 피하려고 아주 살짝 뒤로 이동 */
+        const t = duration > 0.6 ? Math.min(0.3, duration * 0.1) : 0;
+        try { v.currentTime = t; } catch (e) { grab(); }
+      });
+      v.addEventListener('seeked', grab);
+      v.addEventListener('loadeddata', () => { if (!v.seeking) setTimeout(grab, 60); });
+      v.addEventListener('error', () => finish(null));
+
+      v.src = url;
+      /* iOS 사파리는 재생을 한 번 시도해야 프레임이 디코딩되는 경우가 있음 */
+      const p = v.play && v.play();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    });
+  }
+
+  function formatDuration(sec) {
+    if (!sec || !Number.isFinite(sec)) return '';
+    const s = Math.round(sec);
+    return `${Math.floor(s / 60)}:${pad(s % 60)}`;
+  }
+
+  async function addVideos(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.type.startsWith('video/'));
+    if (!files.length) return;
+    for (const f of files) {
+      try {
+        toast(`동영상 미리보기를 만드는 중… (${f.name})`);
+        const id = newId();
+        await DiaryDB.putMedia({ id, blob: f, type: f.type || 'video/mp4', name: f.name });
+        blobMap.set(id, f);
+
+        /* 첫 프레임 썸네일 생성 → 별도 미디어로 저장 */
+        let posterId = '';
+        let duration = 0;
+        try {
+          const r = await makeVideoPoster(f);
+          duration = r.duration || 0;
+          if (r.blob) {
+            posterId = newId();
+            await DiaryDB.putMedia({
+              id: posterId, blob: r.blob, type: 'image/jpeg',
+              name: (f.name || 'video') + '.thumb.jpg'
+            });
+            blobMap.set(posterId, r.blob);
+          }
+        } catch (e) { console.warn('썸네일 생성 실패:', e); }
+
+        const host = insertHTMLAtCaret(
+          `<span class="media-video" contenteditable="false" data-mid="${id}"` +
+          ` data-poster="${escapeAttr(posterId)}" data-name="${escapeAttr(f.name)}"` +
+          ` data-size="${f.size}" data-dur="${duration}"></span><p><br></p>`
+        );
+        if (!host) {
+          await DiaryDB.delMedia(id).catch(() => {});
+          if (posterId) await DiaryDB.delMedia(posterId).catch(() => {});
+          continue;
+        }
+        const wrap = host.querySelector(`.media-video[data-mid="${id}"]`);
+        if (wrap) await hydrateOne(wrap);
+      } catch (err) {
+        console.error(err);
+        toast(`동영상을 추가하지 못했어요: ${f.name}`);
+      }
+    }
+    saveNow();
+  }
+
+  /* 동영상 카드 UI 구성 */
+  async function buildVideoCard(el) {
+    const mid = el.dataset.mid;
+    const name = el.dataset.name || '동영상';
+    const posterId = el.dataset.poster || '';
+    const dur = Number(el.dataset.dur) || 0;
+    el.innerHTML = '';
+
+    /* --- 썸네일 (탭 → 원본 저장) --- */
+    const thumb = document.createElement('button');
+    thumb.type = 'button';
+    thumb.className = 'mv-thumb';
+    thumb.title = '탭하면 원본 동영상을 기기에 저장합니다';
+    thumb.setAttribute('aria-label', `${name} — 탭하면 기기에 저장`);
+
+    const posterUrl = posterId ? await mediaURL(posterId) : null;
+    if (posterUrl) {
+      const im = document.createElement('img');
+      im.src = posterUrl;
+      im.alt = name;
+      im.decoding = 'async';
+      thumb.appendChild(im);
+    } else {
+      const ph = document.createElement('span');
+      ph.className = 'mv-placeholder';
+      ph.textContent = '🎬';
+      thumb.appendChild(ph);
+    }
+
+    const badge = document.createElement('span');
+    badge.className = 'mv-save-badge';
+    badge.textContent = '⤓ 저장';
+    thumb.appendChild(badge);
+
+    if (dur) {
+      const d = document.createElement('span');
+      d.className = 'mv-dur';
+      d.textContent = formatDuration(dur);
+      thumb.appendChild(d);
+    }
+    thumb.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      saveMediaById(mid, name, el.dataset.type || '');
+    });
+    el.appendChild(thumb);
+
+    /* --- 하단 바: 이름 · 크기 · 재생 · 저장 · 삭제 --- */
+    const bar = document.createElement('span');
+    bar.className = 'mv-bar';
+
+    const nm = document.createElement('span');
+    nm.className = 'm-name';
+    nm.textContent = name;
+
+    const sz = document.createElement('span');
+    sz.className = 'm-size';
+    sz.textContent = formatSize(Number(el.dataset.size) || 0);
+
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'mv-play';
+    play.textContent = '▶ 재생';
+    play.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (el.querySelector('video')) { closeVideoPlayer(el, thumb); return; }
+      const url = await mediaURL(mid);
+      if (!url) { toast('동영상을 불러오지 못했어요.'); return; }
+      const player = document.createElement('video');
+      player.className = 'mv-player';
+      player.controls = true;
+      player.playsInline = true;
+      player.setAttribute('playsinline', '');
+      player.preload = 'metadata';
+      player.src = url;
+      thumb.classList.add('hidden');
+      el.insertBefore(player, bar);
+      play.textContent = '■ 닫기';
+      player.play().catch(() => {});
+    });
+
+    const dl = document.createElement('button');
+    dl.type = 'button';
+    dl.className = 'm-dl';
+    dl.textContent = '저장';
+    dl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveMediaById(mid, name, el.dataset.type || '');
+    });
+
+    const del = mediaDelBtn(el, name);
+    bar.appendChild(nm); bar.appendChild(sz);
+    bar.appendChild(play); bar.appendChild(dl); bar.appendChild(del);
+    el.appendChild(bar);
+  }
+
+  function closeVideoPlayer(el, thumb) {
+    const p = el.querySelector('video');
+    if (p) { try { p.pause(); } catch (e) {} p.remove(); }
+    if (thumb) thumb.classList.remove('hidden');
+    const btn = el.querySelector('.mv-play');
+    if (btn) btn.textContent = '▶ 재생';
   }
 
   function downscaleImage(file) {
@@ -639,14 +965,18 @@ const Editor = (() => {
     saveNow();
   }
 
+  /* 📎 파일 버튼: 사진·동영상은 파일 이름 대신 썸네일 카드로 표시하고,
+     그 외 형식만 첨부 파일 칩으로 처리 */
   async function addFiles(fileList) {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    for (const f of files) {
-      /* 파일 버튼으로 고른 이미지/오디오도 첨부 파일 칩으로 일관 처리 */
-      await insertMediaWrap(f, 'media-file');
-    }
-    saveNow();
+    const imgs = files.filter((f) => f.type.startsWith('image/'));
+    const vids = files.filter((f) => f.type.startsWith('video/'));
+    const etc  = files.filter((f) => !f.type.startsWith('image/') && !f.type.startsWith('video/'));
+    if (imgs.length) await addPhotos(imgs);
+    if (vids.length) await addVideos(vids);
+    for (const f of etc) await insertMediaWrap(f, 'media-file');
+    if (etc.length) saveNow();
   }
 
   async function insertMediaWrap(file, cls) {
@@ -670,16 +1000,18 @@ const Editor = (() => {
      미디어 복원(hydrate): 저장된 data-mid 로부터 표시 UI 구성
      ================================================================== */
   async function hydrateMedia(root) {
-    for (const el of root.querySelectorAll('img[data-mid], .media-audio, .media-file')) {
+    for (const el of root.querySelectorAll('img[data-mid], .media-audio, .media-file, .media-video')) {
       await hydrateOne(el);
     }
   }
 
   async function mediaURL(mid) {
+    if (!mid) return null;
     let url = urlMap.get(mid);
     if (!url) {
       const rec = await DiaryDB.getMedia(mid);
-      if (!rec) return null;
+      if (!rec || !rec.blob) return null;
+      blobMap.set(mid, rec.blob);            /* 저장 시 즉시 사용할 원본 캐시 */
       url = URL.createObjectURL(rec.blob);
       urlMap.set(mid, url);
     }
@@ -692,8 +1024,20 @@ const Editor = (() => {
         const url = await mediaURL(el.dataset.mid);
         if (!url) { el.closest('.img-wrap') ? el.closest('.img-wrap').remove() : el.remove(); return; }
         el.src = url;
+        ensureImgSaveBtn(el.closest('.img-wrap'));
         return;
       }
+
+      /* 동영상: 첫 프레임 썸네일 카드 (원본이 없으면 카드 제거) */
+      if (el.classList.contains('media-video')) {
+        const has = await DiaryDB.getMedia(el.dataset.mid).catch(() => null);
+        if (!has) { el.remove(); return; }
+        blobMap.set(el.dataset.mid, has.blob);
+        if (!el.dataset.type && has.type) el.dataset.type = has.type;
+        await buildVideoCard(el);
+        return;
+      }
+
       const mid = el.dataset.mid;
       const url = await mediaURL(mid);
       if (!url) { el.remove(); return; }
@@ -723,10 +1067,7 @@ const Editor = (() => {
         dl.type = 'button'; dl.className = 'm-dl'; dl.textContent = '저장';
         dl.addEventListener('click', (e) => {
           e.stopPropagation();
-          /* 새 탭 없이 다운로드 (a[download] 프로그래매틱 클릭) */
-          const a = document.createElement('a');
-          a.href = url; a.download = el.dataset.name || 'file'; a.target = '_self';
-          document.body.appendChild(a); a.click(); a.remove();
+          saveMediaById(mid, el.dataset.name || 'file', '');
         });
         const del = mediaDelBtn(el, el.dataset.name);
         el.appendChild(icon); el.appendChild(name); el.appendChild(size);
@@ -771,6 +1112,15 @@ const Editor = (() => {
 
     const acts = document.createElement('span');
     acts.className = 'img-actions';
+    /* 원본을 기기에 저장 (사진첩/갤러리 또는 다운로드 폴더) */
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.textContent = '저장';
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const im = wrap.querySelector('img[data-mid]');
+      if (im) saveMediaById(im.dataset.mid, im.dataset.name || 'photo.jpg', '');
+    });
     const freeBtn = document.createElement('button');
     freeBtn.type = 'button';
     freeBtn.textContent = wrap.dataset.free === '1' ? '고정' : '자유배치';
@@ -779,7 +1129,7 @@ const Editor = (() => {
     delBtn.type = 'button';
     delBtn.textContent = '삭제';
     delBtn.addEventListener('click', (e) => { e.stopPropagation(); removeImage(wrap); });
-    acts.appendChild(freeBtn); acts.appendChild(delBtn);
+    acts.appendChild(saveBtn); acts.appendChild(freeBtn); acts.appendChild(delBtn);
     wrap.appendChild(acts);
 
     if (wrap.dataset.free === '1') wrap.addEventListener('pointerdown', startFreeDrag);

@@ -220,8 +220,10 @@ const App = (() => {
   }
 
   /* ---------- 백업 / 복원 ----------
-     백업 = 모든 IndexedDB 데이터(일기 텍스트·블록·그림·메타 + 사진·오디오·파일 원본)를
-     단일 JSON 파일로 내보내기. 미디어 Blob 은 base64 로 내장 → 외부 의존성 없이 완전 복원 가능. */
+     백업 = 모든 IndexedDB 데이터(일기 텍스트·블록·그림·메타 +
+     사진·동영상·동영상 썸네일·오디오·파일 원본)를 단일 JSON 파일로 내보내기.
+     미디어 Blob 은 base64 로 내장 → 외부 의존성 없이 완전 복원 가능.
+     파일명: diary-backup-YYYY-MM-DD.json — 브라우저 표준 다운로드로 다운로드 폴더에 저장. */
 
   async function blobToBase64(blob) {
     /* 1순위: 표준 arrayBuffer() — 모든 최신 브라우저 지원 */
@@ -252,22 +254,30 @@ const App = (() => {
 
   async function downloadBackup() {
     const btn = document.getElementById('btn-backup');
+    const label = btn.textContent;
     btn.disabled = true;
+    btn.textContent = '💾 백업 준비 중…';
     try {
-      toast('백업 파일을 만드는 중…');
       const entries = await DiaryDB.allEntries();
       const media = await DiaryDB.allMedia();
+
+      if (!entries.length && !media.length) {
+        toast('백업할 일기가 아직 없어요.');
+        return;
+      }
+      toast(`백업 파일을 만드는 중… (일기 ${entries.length}일 · 첨부 ${media.length}개)`);
 
       /* 거대 문자열 1개 대신 조각 배열로 Blob 구성 (메모리 부담 완화) */
       const parts = [
         '{"app":"diary-pwa","format":2,"exportedAt":' + Date.now() + ',',
         '"entries":', JSON.stringify(entries), ',"media":['
       ];
+      let encFail = 0;
       for (let i = 0; i < media.length; i++) {
         const m = media[i];
         let data = '';
         try { data = await blobToBase64(m.blob); }
-        catch (e) { console.error('미디어 인코딩 실패:', m.id, e); }
+        catch (e) { encFail++; console.error('미디어 인코딩 실패:', m.id, e); }
         parts.push((i ? ',' : '') +
           JSON.stringify({ id: m.id, type: m.type || '', name: m.name || '', data }));
       }
@@ -275,137 +285,109 @@ const App = (() => {
       const blob = new Blob(parts, { type: 'application/json' });
       const fname = 'diary-backup-' + todayStr() + '.json';
 
-      /* 1순위: 브라우저 파일 저장 대화상자(저장 위치 직접 선택) */
-      if (window.showSaveFilePicker) {
-        try {
-          const handle = await window.showSaveFilePicker({
-            suggestedName: fname,
-            types: [{ description: '다이어리 백업', accept: { 'application/json': ['.json'] } }]
-          });
-          const w = await handle.createWritable();
-          await w.write(blob);
-          await w.close();
-          toast('백업을 저장했어요.');
-          return;
-        } catch (err) {
-          if (err && err.name === 'AbortError') return;   /* 사용자가 취소 */
-          console.warn('저장 대화상자 실패, 다운로드로 대체:', err);
-        }
-      }
-      /* 2순위: 표준 다운로드 (모바일 등) — 새 탭 없이 */
+      /* 브라우저 표준 다운로드 — 새 탭 없이 다운로드 폴더에 저장 */
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url; a.download = fname; a.target = '_self';
+      a.rel = 'noopener';
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 5000);
-      toast('백업 파일을 내려받았어요.');
+      setTimeout(() => URL.revokeObjectURL(url), 8000);
+
+      toast(encFail
+        ? `${fname} 저장 — 첨부 ${encFail}개는 포함하지 못했어요.`
+        : `${fname} 저장 완료 (일기 ${entries.length}일 · 첨부 ${media.length}개)`);
     } catch (e) {
       console.error(e);
-      toast('백업 생성에 실패했어요.');
+      toast('백업 생성에 실패했어요. 저장 공간을 확인해 주세요.');
     } finally {
       btn.disabled = false;
+      btn.textContent = label;
     }
   }
 
+  /* 복원 = 내려받아 둔 diary-backup-*.json 을 골라 일기와 첨부를 그대로 되살린다.
+     결과는 성공/실패 개수를 포함한 명확한 메시지로 알린다. */
   async function restoreBackup(file) {
+    const btn = document.getElementById('btn-restore');
+    const label = btn.textContent;
     try {
-      let obj;
-      try { obj = JSON.parse(await file.text()); }
-      catch { toast('백업 파일 형식이 올바르지 않아요.'); return; }
-      if (!obj || obj.app !== 'diary-pwa' ||
-          !Array.isArray(obj.entries) || !Array.isArray(obj.media)) {
-        toast('이 앱의 백업 파일이 아니에요.');
+      /* 1) 파일 읽기 */
+      let text;
+      try { text = await file.text(); }
+      catch (e) {
+        console.error(e);
+        toast('❌ 파일을 읽지 못했어요. 다시 선택해 주세요.');
         return;
       }
+      if (!text || !text.trim()) { toast('❌ 백업 파일이 비어 있어요.'); return; }
+
+      /* 2) 형식 검사 */
+      let obj;
+      try { obj = JSON.parse(text); }
+      catch { toast('❌ 백업 파일 형식이 올바르지 않아요 (JSON 아님).'); return; }
+      if (!obj || obj.app !== 'diary-pwa') {
+        toast('❌ 이 앱(나의 다이어리)의 백업 파일이 아니에요.');
+        return;
+      }
+      if (!Array.isArray(obj.entries) || !Array.isArray(obj.media)) {
+        toast('❌ 백업 파일이 손상되어 복원할 수 없어요.');
+        return;
+      }
+
+      /* 3) 사용자 확인 */
       const when = obj.exportedAt ? new Date(obj.exportedAt).toLocaleString('ko-KR') : '알 수 없음';
       if (!confirm(
-        `백업으로 복원할까요?\n` +
-        `백업 시점: ${when}\n일기 ${obj.entries.length}일 · 미디어 ${obj.media.length}개\n\n` +
+        `백업으로 복원할까요?\n\n` +
+        `파일: ${file.name}\n백업 시점: ${when}\n` +
+        `일기 ${obj.entries.length}일 · 첨부 ${obj.media.length}개\n\n` +
         `현재 기기의 일기가 모두 이 백업으로 교체됩니다.`)) return;
 
-      toast('복원 중…');
+      btn.disabled = true;
+      btn.textContent = '📂 복원 중…';
+      toast('복원 중… 잠시만 기다려 주세요.');
+
+      /* 4) 전체 교체 */
       await DiaryDB.clearAll();
-      let mediaFail = 0;
+
+      let mediaOk = 0, mediaFail = 0;
       for (const m of obj.media) {
         try {
+          if (!m || !m.id) { mediaFail++; continue; }
           await DiaryDB.putMedia({
             id: m.id, blob: b64ToBlob(m.data, m.type),
             type: m.type || '', name: m.name || ''
           });
-        } catch (e) { mediaFail++; console.error(e); }
+          mediaOk++;
+        } catch (e) { mediaFail++; console.error('첨부 복원 실패:', m && m.id, e); }
       }
-      for (const e of obj.entries) {
-        try { await DiaryDB.putEntry(e); } catch (err) { console.error(err); }
-      }
-      await renderCalendar();
-      if (curQuery) runSearch(curQuery);
-      toast(mediaFail
-        ? `복원 완료 (미디어 ${mediaFail}개는 복구하지 못했어요)`
-        : '복원이 완료됐어요.');
-    } catch (e) {
-      console.error(e);
-      toast('복원에 실패했어요.');
-    }
-  }
 
-  /* ---------- 동기화 (병합) ----------
-     PC ↔ 스마트폰 간 데이터 동기화용. 다른 기기의 백업 파일을 읽어
-     현재 기기 데이터와 "병합"한다. 복원(전체 교체)과 달리:
-     - 이 기기에만 있는 일기는 그대로 보존
-     - 같은 날짜가 양쪽에 있으면 updatedAt(마지막 저장 시각)이 최신인 쪽 유지
-     - 이 기기에 없는 사진·오디오·파일만 추가 (중복 저장 없음) */
-  async function mergeBackup(file) {
-    try {
-      let obj;
-      try { obj = JSON.parse(await file.text()); }
-      catch { toast('백업 파일 형식이 올바르지 않아요.'); return; }
-      if (!obj || obj.app !== 'diary-pwa' ||
-          !Array.isArray(obj.entries) || !Array.isArray(obj.media)) {
-        toast('이 앱의 백업 파일이 아니에요.');
-        return;
-      }
-      const when = obj.exportedAt ? new Date(obj.exportedAt).toLocaleString('ko-KR') : '알 수 없음';
-      if (!confirm(
-        `이 백업 파일과 동기화(병합)할까요?\n` +
-        `백업 시점: ${when}\n일기 ${obj.entries.length}일 · 미디어 ${obj.media.length}개\n\n` +
-        `같은 날짜는 더 최신에 저장된 내용이 남고,\n` +
-        `이 기기에만 있는 일기는 그대로 유지됩니다.`)) return;
-
-      toast('동기화 중…');
-
-      /* 1) 일기 병합: 새 날짜는 추가, 겹치는 날짜는 최신 저장본 유지 */
-      const localEntries = await DiaryDB.allEntries();
-      const localMap = new Map(localEntries.map((e) => [e.date, e]));
-      let added = 0, updated = 0, kept = 0;
+      let entryOk = 0, entryFail = 0;
       for (const e of obj.entries) {
         try {
-          const loc = localMap.get(e.date);
-          if (!loc) { await DiaryDB.putEntry(e); added++; }
-          else if ((e.updatedAt || 0) > (loc.updatedAt || 0)) { await DiaryDB.putEntry(e); updated++; }
-          else kept++;
-        } catch (err) { console.error(err); }
+          if (!e || !e.date) { entryFail++; continue; }
+          await DiaryDB.putEntry(e);
+          entryOk++;
+        } catch (err) { entryFail++; console.error('일기 복원 실패:', e && e.date, err); }
       }
 
-      /* 2) 미디어 병합: 이 기기에 없는 것만 추가 */
-      let mediaFail = 0;
-      for (const m of obj.media) {
-        try {
-          const exists = await DiaryDB.getMedia(m.id);
-          if (exists) continue;
-          await DiaryDB.putMedia({
-            id: m.id, blob: b64ToBlob(m.data, m.type),
-            type: m.type || '', name: m.name || ''
-          });
-        } catch (e) { mediaFail++; console.error(e); }
-      }
-
+      /* 5) 화면 갱신 + 결과 안내 */
       await renderCalendar();
       if (curQuery) runSearch(curQuery);
-      toast(`동기화 완료 — 추가 ${added}일 · 갱신 ${updated}일 · 유지 ${kept}일` +
-        (mediaFail ? ` (미디어 ${mediaFail}개 실패)` : ''));
+
+      if (!entryOk && !mediaOk) {
+        toast('❌ 복원하지 못했어요. 백업 파일을 확인해 주세요.');
+      } else if (entryFail || mediaFail) {
+        toast(`⚠️ 복원 완료 — 일기 ${entryOk}일 · 첨부 ${mediaOk}개 ` +
+              `(실패: 일기 ${entryFail}일 · 첨부 ${mediaFail}개)`);
+      } else {
+        toast(`✅ 복원 완료 — 일기 ${entryOk}일 · 첨부 ${mediaOk}개를 되살렸어요.`);
+      }
     } catch (e) {
       console.error(e);
-      toast('동기화에 실패했어요.');
+      toast('❌ 복원에 실패했어요. 저장 공간을 확인해 주세요.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
     }
   }
 
@@ -416,13 +398,6 @@ const App = (() => {
     fileInp.addEventListener('change', () => {
       if (fileInp.files && fileInp.files[0]) restoreBackup(fileInp.files[0]);
       fileInp.value = '';
-    });
-    /* 동기화 버튼: 다른 기기의 백업 파일을 골라 병합 */
-    const syncInp = document.getElementById('file-sync');
-    document.getElementById('btn-sync').addEventListener('click', () => syncInp.click());
-    syncInp.addEventListener('change', () => {
-      if (syncInp.files && syncInp.files[0]) mergeBackup(syncInp.files[0]);
-      syncInp.value = '';
     });
   }
 
