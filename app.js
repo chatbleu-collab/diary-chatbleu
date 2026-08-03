@@ -253,8 +253,10 @@ const App = (() => {
     const size = blob.size || 0;
     if (!size) return;
     for (let off = 0; off < size; off += B64_SLICE) {
-      out.push(await sliceToB64(blob.slice(off, Math.min(off + B64_SLICE, size))));
-      await new Promise(r => setTimeout(r, 0));   /* 렌더러에 숨 돌릴 틈 → 탭 중지 방지 */
+      /* base64 문자열을 그대로 모아두면 첨부 총량만큼 JS 힙을 점유해 탭이 강제 종료된다.
+         조각마다 즉시 Blob 으로 옮겨 문자열을 GC 대상으로 만든다. */
+      out.push(new Blob([await sliceToB64(blob.slice(off, Math.min(off + B64_SLICE, size)))]));
+      await new Promise(r => setTimeout(r, 0));   /* 렌더러에 숨 돌릴 틈 */
     }
   }
 
@@ -278,7 +280,7 @@ const App = (() => {
         toast('백업할 일기가 아직 없어요.');
         return;
       }
-      toast(`백업 파일을 만드는 중… (일기 ${entries.length}일 · 첨부 ${ids.length}개)`);
+      toast(`백업 파일을 만드는 중… v10 (일기 ${entries.length}일 · 첨부 ${ids.length}개)`);
 
       /* 문자열을 쌓아두지 않고 조각마다 Blob 으로 넘겨 메모리에서 즉시 해제한다.
          (이전 방식은 모든 첨부를 base64 로 동시에 들고 있어 탭이 강제 종료됨) */
@@ -314,7 +316,9 @@ const App = (() => {
       buf.push(']}');
       flush();
 
-      const blob = new Blob(blobParts, { type: 'application/json' });
+      /* application/json 은 일부 브라우저에서 '다운로드' 대신 '탭에 표시'로 처리되어
+         거대 파일을 렌더링하다 탭이 중지된다. octet-stream 은 항상 저장으로 처리된다. */
+      const blob = new Blob(blobParts, { type: 'application/octet-stream' });
       blobParts.length = 0;
       const fname = 'diary-backup-' + todayStr() + '.json';
 
