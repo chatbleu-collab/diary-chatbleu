@@ -225,10 +225,14 @@ const App = (() => {
      미디어 Blob 은 base64 로 내장 → 외부 의존성 없이 완전 복원 가능.
      파일명: diary-backup-YYYY-MM-DD.json — 브라우저 표준 다운로드로 다운로드 폴더에 저장. */
 
-  async function blobToBase64(blob) {
-    /* 1순위: 표준 arrayBuffer() — 모든 최신 브라우저 지원 */
-    if (blob && typeof blob.arrayBuffer === 'function') {
-      const buf = new Uint8Array(await blob.arrayBuffer());
+  /* Blob → base64 문자열 조각들을 out 배열에 순차 push.
+     슬라이스 길이는 3의 배수(786,432B)이므로 조각을 이어 붙여도 base64 가 유효하다.
+     전체를 한 문자열로 만들지 않아 큰 사진·동영상에서도 메모리가 튀지 않는다. */
+  const B64_SLICE = 3 * 262144;
+
+  async function sliceToB64(part) {
+    if (typeof part.arrayBuffer === 'function') {
+      const buf = new Uint8Array(await part.arrayBuffer());
       let bin = '';
       const CHUNK = 0x8000;                 /* 호출 인자 수 제한 회피용 청크 처리 */
       for (let i = 0; i < buf.length; i += CHUNK) {
@@ -236,13 +240,22 @@ const App = (() => {
       }
       return btoa(bin);
     }
-    /* 2순위: FileReader 폴백 (구형 브라우저) */
+    /* 폴백: FileReader (구형 브라우저) */
     return new Promise((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(String(r.result).split(',')[1] || '');
       r.onerror = () => reject(r.error || new Error('읽기 실패'));
-      r.readAsDataURL(blob);
+      r.readAsDataURL(part);
     });
+  }
+
+  async function encodeBlobInto(blob, out) {
+    const size = blob.size || 0;
+    if (!size) return;
+    for (let off = 0; off < size; off += B64_SLICE) {
+      out.push(await sliceToB64(blob.slice(off, Math.min(off + B64_SLICE, size))));
+      await new Promise(r => setTimeout(r, 0));   /* 렌더러에 숨 돌릴 틈 → 탭 중지 방지 */
+    }
   }
 
   function b64ToBlob(b64, type) {
@@ -259,30 +272,50 @@ const App = (() => {
     btn.textContent = '💾 백업 준비 중…';
     try {
       const entries = await DiaryDB.allEntries();
-      const media = await DiaryDB.allMedia();
+      const ids = await DiaryDB.allMediaKeys();   /* Blob 은 아직 읽지 않는다 */
 
-      if (!entries.length && !media.length) {
+      if (!entries.length && !ids.length) {
         toast('백업할 일기가 아직 없어요.');
         return;
       }
-      toast(`백업 파일을 만드는 중… (일기 ${entries.length}일 · 첨부 ${media.length}개)`);
+      toast(`백업 파일을 만드는 중… (일기 ${entries.length}일 · 첨부 ${ids.length}개)`);
 
-      /* 거대 문자열 1개 대신 조각 배열로 Blob 구성 (메모리 부담 완화) */
-      const parts = [
-        '{"app":"diary-pwa","format":2,"exportedAt":' + Date.now() + ',',
-        '"entries":', JSON.stringify(entries), ',"media":['
-      ];
-      let encFail = 0;
-      for (let i = 0; i < media.length; i++) {
-        const m = media[i];
-        let data = '';
-        try { data = await blobToBase64(m.blob); }
+      /* 문자열을 쌓아두지 않고 조각마다 Blob 으로 넘겨 메모리에서 즉시 해제한다.
+         (이전 방식은 모든 첨부를 base64 로 동시에 들고 있어 탭이 강제 종료됨) */
+      const blobParts = [];
+      let buf = [];
+      const flush = () => { if (buf.length) { blobParts.push(new Blob([buf.join('')])); buf = []; } };
+
+      buf.push('{"app":"diary-pwa","format":2,"exportedAt":' + Date.now() + ',');
+      buf.push('"entries":' + JSON.stringify(entries) + ',"media":[');
+      flush();
+
+      let encFail = 0, wrote = 0;
+      for (let i = 0; i < ids.length; i++) {
+        let m = null;
+        try { m = await DiaryDB.getMedia(ids[i]); }
+        catch (e) { console.error('미디어 조회 실패:', ids[i], e); }
+        if (!m) { encFail++; continue; }
+
+        buf.push((wrote++ ? ',' : '') + '{"id":' + JSON.stringify(m.id) +
+                 ',"type":' + JSON.stringify(m.type || '') +
+                 ',"name":' + JSON.stringify(m.name || '') + ',"data":"');
+        flush();
+        try { if (m.blob) await encodeBlobInto(m.blob, blobParts); }
         catch (e) { encFail++; console.error('미디어 인코딩 실패:', m.id, e); }
-        parts.push((i ? ',' : '') +
-          JSON.stringify({ id: m.id, type: m.type || '', name: m.name || '', data }));
+        buf.push('"}');
+        flush();
+        m = null;                                   /* 참조 해제 → GC 대상 */
+
+        if (ids.length > 5 && i % 5 === 4) {
+          btn.textContent = `💾 ${i + 1}/${ids.length}…`;
+        }
       }
-      parts.push(']}');
-      const blob = new Blob(parts, { type: 'application/json' });
+      buf.push(']}');
+      flush();
+
+      const blob = new Blob(blobParts, { type: 'application/json' });
+      blobParts.length = 0;
       const fname = 'diary-backup-' + todayStr() + '.json';
 
       /* 브라우저 표준 다운로드 — 새 탭 없이 다운로드 폴더에 저장 */
@@ -291,11 +324,11 @@ const App = (() => {
       a.href = url; a.download = fname; a.target = '_self';
       a.rel = 'noopener';
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 8000);
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
 
       toast(encFail
         ? `${fname} 저장 — 첨부 ${encFail}개는 포함하지 못했어요.`
-        : `${fname} 저장 완료 (일기 ${entries.length}일 · 첨부 ${media.length}개)`);
+        : `${fname} 저장 완료 (일기 ${entries.length}일 · 첨부 ${ids.length}개)`);
     } catch (e) {
       console.error(e);
       toast('백업 생성에 실패했어요. 저장 공간을 확인해 주세요.');

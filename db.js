@@ -82,6 +82,12 @@ const DiaryDB = (() => {
     return reqP(db.transaction('media').objectStore('media').getAll());
   }
 
+  /* 미디어 id 목록만 조회 (백업 시 Blob 을 한꺼번에 메모리에 올리지 않기 위함) */
+  async function allMediaKeys() {
+    const db = await open();
+    return reqP(db.transaction('media').objectStore('media').getAllKeys());
+  }
+
   /* 두 스토어 전체 비우기 (복원 직전에만 사용) */
   async function clearAll() {
     const db = await open();
@@ -99,5 +105,5 @@ const DiaryDB = (() => {
     return reqP(db.transaction('media', 'readwrite').objectStore('media').delete(id));
   }
 
-  return { getEntry, putEntry, delEntry, allEntries, monthKeys, putMedia, getMedia, delMedia, allMedia, clearAll };
+  return { getEntry, putEntry, delEntry, allEntries, monthKeys, putMedia, getMedia, delMedia, allMedia, allMediaKeys, clearAll };
 })();
